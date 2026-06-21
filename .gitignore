@@ -23,6 +23,11 @@ build/
 venv/
 env/
 
+# Node / UI
+node_modules/
+ui/dist/
+ui/.vite/
+
 # macOS
 .DS_Store
 

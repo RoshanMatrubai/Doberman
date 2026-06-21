@@ -1,18 +1,8 @@
-# 🐕 GoldenRetriever · AI Agent Authenticator
+# 🐕 GoldenRetriever · Scoped Access Broker for Agentic AI
 
-> AI agents don't get your passwords. They ask. You decide. They get a token that expires.
+> Companies don't hand their AI agents passwords. They hand them a scoped, expiring JWT — exactly the permissions the task needs, gone the moment the session ends.
 
-Agent calls GoldenRetriever → user approves on the dashboard → agent gets a short-lived signed token (OAuth access token or headless-login session cookies), **never the raw password.**
-
----
-
-## How It Works
-
-1. An AI agent (Claude Code MCP, SDK, or REST) requests access to a service (e.g. Gmail).
-2. A card appears on your dashboard with a 60-second countdown.
-3. You click **Approve** or **Deny**.
-4. On approval the agent receives an Ed25519-signed JWT whose encrypted `hint` payload contains the real OAuth token or session cookies.
-5. The token expires in 15 minutes and is never renewable — agents re-request every time.
+GoldenRetriever sits between your AI agents and the third-party accounts they need. The agent requests access for a task; GoldenRetriever derives the minimum permission set, an admin approves, and the agent receives a short-lived Ed25519-signed JWT. Every grant is scoped, logged, and revocable.
 
 ---
 
@@ -20,10 +10,10 @@ Agent calls GoldenRetriever → user approves on the dashboard → agent gets a 
 
 ```bash
 pip install -r requirements.txt
-playwright install chromium    # for headless login (Phase 13+)
 
-python main.py                 # dashboard :5001 · agent API :5002
-python main.py --mcp           # stdio MCP server for Claude Code
+python main.py          # dashboard :5001 · agent API :5002
+python main.py --mcp    # stdio MCP server for Claude Code
+npm --prefix ui install && npm --prefix ui run dev   # frontend dev server
 ```
 
 ---
@@ -33,65 +23,61 @@ python main.py --mcp           # stdio MCP server for Claude Code
 | Layer | Choice |
 |---|---|
 | KDF | Argon2id (m=65536, t=3, p=4) |
-| Vault encryption | AES-256-GCM, random nonce per operation |
+| Secret encryption | AES-256-GCM, random nonce per operation |
 | Token format | Ed25519-signed JWT (`EdDSA`) with AES-GCM encrypted credential hint |
-| OAuth | `authlib` auth-code flow, refresh token stored encrypted |
-| Headless login | Playwright Chromium headless |
-| Cookie cache | Encrypted `.auth_state/{service}.enc`, 6-hour freshness window |
-| MCP | `fastmcp` stdio server |
+| Scope model | Per-request allow-list derived from agent task; embedded in signed claims |
+| MCP | `fastmcp` stdio server — first-class Claude Code integration |
 | Persistence | SQLite (`vault.db`) |
 
 ---
 
 ## Security Model
 
-- Agents receive a **signed JWT** — never raw passwords, master vault keys, OAuth secrets, or other users' tokens.
+- Agents receive a **signed JWT** — never raw passwords, master vault keys, or OAuth secrets.
 - The JWT `hint` is an AES-GCM blob decryptable only by the issuing server.
-- Per-hint key = `HMAC(master_secret, request_id)` — derived at issue time, never stored.
+- Per-hint key = `HMAC(master_secret, request_id)` — derived at issue, never stored.
 - Agents fetch the hint **once** via `GET /agent/hint/{id}` (consumed on first read).
-- Revocation checked on every poll and `verify_token()` call.
+- Tokens expire at session end or TTL, whichever first — never renewable.
+- Revocation checked on every use.
 
 ---
 
-## Demo (90 seconds)
+## Project Layout
 
 ```
-Terminal A:  python main.py
-Terminal B:  python main.py --mcp
-Terminal C:  python simulate_agent.py --service Gmail
+config.py          — ports, paths, TTLs, service adapter stubs
+main.py            — entry point (--mcp for MCP server)
+core/              — crypto primitives, vault, token issuance
+policy/            — task-to-scope engine (least-privilege derivation)
+agent/             — REST API, SDK, MCP server
+auth/              — OAuth flow and Playwright headless login
+auth/adapters/     — per-service login adapters
+dashboard/         — Flask + SocketIO backend + routes
+audit/             — append-only audit log
+ui/                — frontend dashboard (swappable design shell)
 ```
 
-1. `[C]` Requesting Gmail credentials…
-2. Dashboard shows pending card with 60 s countdown
-3. Click **Approve**
-4. `[C]` ✅ Token received (exp 15 min)
-5. `    ` 📬 Fetching inbox… 200 OK · 3 unread
-6. Audit: `SUBMITTED → APPROVED → TOKEN_ISSUED → HINT_FETCHED`
-7. Click **Revoke**
-8. `[C]` next request: ❌ Token revoked — re-request required
+---
+
+## Demo Arc (90 seconds)
+
+```
+A: python main.py            # backend :5001/:5002
+B: npm --prefix ui run dev   # UI
+C: python main.py --mcp      # MCP server
+
+Agent → request_access("Amazon", "compare prices on these 3 items")
+1. Pending card appears: derived scope = [search, read], NO purchase
+2. Admin clicks Approve
+3. Agent receives scoped JWT (exp: session end)
+4. Agent searches prices — in scope → 200 OK
+5. Agent attempts checkout — out of scope → blocked + shown in UI
+6. Session ends → token auto-expires
+7. Audit feed: SUBMITTED → SCOPE_DERIVED → APPROVED → TOKEN_ISSUED → SCOPE_DENIED → SESSION_ENDED
+```
 
 ---
 
-## Status
-
-| Phase | Description | Status |
-|---|---|---|
-| 1 | Scaffold | ✅ |
-| 2 | Crypto primitives | 🔜 |
-| 3 | Encrypted vault | 🔜 |
-| 4 | Request queue | 🔜 |
-| 5 | Agent REST API | 🔜 |
-| 6 | Dashboard shell | 🔜 |
-| 7 | Token issuance | 🔜 |
-| 8 | Full approval loop | 🔜 |
-| 9 | Python SDK | 🔜 |
-| 10 | MCP server | 🔜 |
-| 11 | Audit log | 🔜 |
-| 12 | OAuth2 | 🔜 |
-| 13 | Headless login | 🔜 |
-| 14 | SDK get_session() wired | 🔜 |
-| 15 | Demo polish | 🔜 |
-
----
+## License
 
 MIT © 2026 Roshan Matrubai

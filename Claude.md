@@ -1,18 +1,21 @@
-# 🐕 GoldenRetriever · AI Agent Authenticator
-> AI agents don't get your passwords. They ask. You decide. They get a token that expires.
+# 🐕 GoldenRetriever · Scoped Access Broker for Agentic AI
+> Companies don't hand their AI agents passwords. They hand them a scoped, expiring JWT — exactly the permissions the task needs, gone the moment the session ends.
 
-Agent calls GoldenRetriever → user approves on the dashboard → agent gets a short-lived signed token (OAuth access token or headless-login session cookies), never the raw password.
-Personal-use paid product. Hackathon demo. Build in phase order, one phase at a time.
+GoldenRetriever is a B2B SaaS that sits between a company's AI agents and the third-party accounts they need (Amazon, Google, internal tools, etc.). Instead of giving an agent a raw password and trusting it, the agent requests access for a task; GoldenRetriever derives the minimum permissions that task requires (e.g. "search prices on Amazon" → read/browse only, **no purchase**), an admin approves on a dashboard, and the agent gets a short-lived JWT handoff token that expires at session end. Every grant is scoped, logged, and revocable. Works with Claude's CLI agent as a first-class client.
+
+**Demo-first:** every feature must be visibly demoable in the UI. Build each capability so it can be triggered, watched, and explained live — no invisible backend-only wins.
 
 ---
 
 ## STACK & COMMANDS
 ```
-install:   pip install -r requirements.txt && playwright install chromium
-run:       python main.py            # dashboard :5001, agent API :5002
-mcp:       python main.py --mcp      # stdio MCP server for Claude Code
-test:      pytest core/test_crypto.py -x
-lint:      flake8 core/ agent/ auth/ dashboard/ audit/
+install:   pip install -r requirements.txt && npm --prefix ui install
+backend:   python main.py            # API + dashboard backend on :5001
+agent-api: (same process)            # agent-facing API on :5002
+cli:       python main.py --mcp      # stdio MCP server for Claude CLI agent
+ui:        npm --prefix ui run dev   # frontend dev server (swappable shell)
+test:      pytest core/test_<module>.py -x
+lint:      flake8 core/ agent/ auth/ policy/ dashboard/ audit/
 ```
 **Never** run the full test suite. Single-file only.
 
@@ -22,57 +25,64 @@ lint:      flake8 core/ agent/ auth/ dashboard/ audit/
 | Layer | Decision |
 |---|---|
 | KDF | Argon2id (m=65536, t=3, p=4) — NOT PBKDF2, NOT bcrypt |
-| Vault encryption | AES-256-GCM, random nonce per op, stored in SQLite |
-| Token format | Ed25519-signed JWT (`EdDSA`) with AES-GCM encrypted credential hint |
-| OAuth | `authlib` auth-code flow, refresh token stored encrypted |
-| Headless login | Playwright Chromium headless |
-| Cookie cache | Encrypted `.auth_state/{service}.enc`, 6-hour freshness window |
-| MCP | `fastmcp` stdio server |
-| Persistence | SQLite (`vault.db`) for credentials, tokens, audit log |
-| Request queue | In-memory + SQLite state machine; background expiry thread (5s) |
+| Secret encryption | AES-256-GCM, random nonce per op, stored in SQLite |
+| Handoff token | Ed25519-signed JWT (`EdDSA`) carrying a scoped permission claim + encrypted credential hint |
+| Scope model | Permission set derived per request; embedded as signed JWT claims; enforced at issuance and verifiable by the agent |
+| Task → scope | Policy engine parses the agent's task/prompt → minimum permission set (`policy/`) |
+| Service auth | Per service: OAuth flow (real provider token) OR Playwright headless login (session cookies) |
+| Session lifetime | Token bound to a session; auto-expires at session end or TTL, whichever first; never renewable |
+| MCP | `fastmcp` stdio server — first-class Claude CLI agent integration |
+| Persistence | SQLite for tenants, accounts, requests, tokens, audit log |
+| Request queue | In-memory + SQLite state machine; background expiry thread |
+| UI | Polished frontend behind a stable API contract — **swappable**: final design sketch arrives last and drops in without backend changes |
 
-**Key files:** `config.py` · `core/crypto.py` · `core/vault.py` · `core/tokens.py` · `agent/queue.py` · `agent/api.py` · `agent/sdk.py` · `agent/mcp_server.py` · `auth/oauth.py` · `auth/session.py` · `auth/adapters/` · `dashboard/app.py` · `audit/log.py`
+**Key dirs:** `config.py` · `core/` (crypto, vault, tokens) · `policy/` (task→scope engine) · `agent/` (api, sdk, mcp_server) · `auth/` (oauth, session, adapters) · `dashboard/` (backend routes + SocketIO) · `ui/` (frontend) · `audit/`
 
 ---
 
-## TOKEN SECURITY MODEL
-- Agents get a JWT signed by GoldenRetriever's Ed25519 identity key.
-- Payload `hint` is an AES-GCM blob: `{type:"oauth", access_token, expires_in}` or `{type:"session", cookies:[...]}`.
-- Per-hint key = `HMAC(master_secret, request_id)` — never stored. Agents fetch hint once via `GET /agent/hint/{id}` (consumed after first read).
-- Revocation checked on every token poll + `verify_token()`. TTL = `TOKEN_TTL_SECONDS` (900s), never renewable — always re-request.
-- Agents NEVER receive: raw passwords, master vault key, OAuth client secrets, other users' tokens.
+## TOKEN & SCOPE MODEL
+- Agents receive a JWT signed by GoldenRetriever's Ed25519 identity key — verifiable offline via the public key.
+- Payload carries: `tenant`, `agent_id`, `service`, `session_id`, `scope` (explicit allow-list of actions), `iat`, `exp`, and an AES-GCM encrypted `hint` (`{type:"oauth",...}` or `{type:"session", cookies:[...]}`).
+- Scope is an **allow-list**: an agent told to compare prices gets `["search","read"]` — never `["purchase","checkout"]`. The agent and downstream enforcement both read the signed scope; nothing outside it is permitted.
+- Per-hint key = `HMAC(master_secret, request_id)`, never stored. Hint fetched once, then consumed.
+- Token expires at session end or TTL (whichever first), never renews — re-request for new work. Revocation checked on every use.
+- Agents NEVER receive: raw passwords, the master vault key, OAuth client secrets, scopes they weren't granted, or other tenants' tokens.
 
-**Request states:** `PENDING → APPROVED | DENIED | EXPIRED`; APPROVED → token issued → JWT; revoked → 410 Gone. Transitions in `agent/queue.py`; driven from dashboard approve/deny routes.
+**Request states:** `PENDING → APPROVED | DENIED | EXPIRED`; APPROVED → scoped token issued; session end / revoke → token dead (410).
 
 ---
 
 ## BUILD PLAN (build in this order — one phase at a time)
-Build bottom-up. Each phase leaves the repo importable and runnable. Restate the phase goal in one line first. **Recommend `/clear` between phases.**
+Build bottom-up. Each phase leaves the repo importable and runnable, **and leaves something new visibly demoable in the UI** once the dashboard exists. Restate the phase goal in one line before starting. **Recommend `/clear` between phases.**
 
-1. **Scaffold** — `config.py` (ports, `DB_PATH`, `TOKEN_TTL_SECONDS=900`, `REQUEST_TTL_SECONDS=60`, `SITE_ADAPTERS` stub), `main.py` (`--mcp` flag, prints startup line, clean imports), `requirements.txt` (`flask flask-socketio cryptography argon2-cffi PyJWT pytest flake8`), `.gitignore`, `LICENSE` (MIT 2026), `README.md`, package dirs + `__init__.py` (`core/ agent/ auth/ auth/adapters/ dashboard/ audit/`). → `chore: scaffold GoldenRetriever project structure and entry point`
-2. **Crypto** — `core/crypto.py`: Argon2id, AES-GCM (nonce prepended), Ed25519 (keygen/sign/verify/to-from-bytes), `encode/decode_jwt` (EdDSA), `derive_hint_key` (HMAC-SHA256), `random_id` (16 hex). `core/test_crypto.py` (use m=256). → `feat: crypto primitives (Argon2id, AES-GCM, Ed25519, JWT)`
-3. **Vault** — `core/vault.py`: SQLite `vault_meta` / `credentials` / `revoked_tokens`; create/unlock (Argon2id VSK), add/get/find/list (masked)/delete credential, add/check revoked token. `extra` holds OAuth config. `core/test_vault.py`. → `feat: encrypted credential vault (SQLite + AES-256-GCM)`
-4. **Request Queue** — `agent/queue.py`: `AuthRequest` dataclass, `RequestQueue` (submit/approve/deny/attach_token/get/list_pending/expire_stale/pending_count_for), background expiry thread (5s). `agent/test_queue.py`. → `feat: auth request queue with state machine and auto-expiry`
-5. **Agent REST API** — `agent/api.py` Blueprint `/agent`: `POST /request` (400/429/202), `GET /token/{id}` (200/202/403/410/404), `DELETE /token/{id}`, `GET /pubkey`. Rate limit 5 pending/agent. `agent/test_api.py`. → `feat: agent REST API (request, poll, revoke, pubkey)`
-6. **Dashboard Shell** — `dashboard/app.py` Flask+SocketIO (`async_mode="threading"`): `init_app`, routes `/ /status /credentials /requests /audit`; emits `request:new` / `request:resolved` / `token:revoked`. `index.html`: pending/credentials/tokens/audit panels, live countdowns, SocketIO-only updates. → `feat: dashboard shell with credential manager and real-time request feed`
-7. **Token Issuance** — `core/tokens.py`: load/create Ed25519 identity (`TOKEN_KEY_FILE`), `get_public_key_hex`, `issue_token` (encrypt hint, sign JWT), `verify_token` (sig+expiry+revocation), `decrypt_hint`. Wire into API token/revoke/pubkey. `core/test_tokens.py`. → `feat: Ed25519 JWT token issuance, verification, and revocation`
-8. **Full Approval Loop** — `dashboard/app.py`: `POST /requests/{id}/approve` (find credential → issue_token hint={} → approve+attach → emit `request:resolved`), `/deny`. Wire buttons. Smoke test `simulate_agent.py`. → `feat: wire full approval loop (dashboard approve → JWT → polling agent)`
-9. **Python SDK** — `agent/sdk.py` `GoldenRetrieverClient`: `request_token` (poll 2s), `verify_token` (cached pubkey), `revoke`, `get_session` (oauth→Bearer / session→cookie jar / empty→plain). Exceptions `ApprovalDenied/Expired/Timeout`. `agent/test_sdk.py`. → `feat: GoldenRetrieverClient SDK with get_session() and error types`
-10. **MCP Server** — `agent/mcp_server.py` FastMCP: `request_credentials` (blocks, returns dict, never raises), `list_available_services`, `revoke_token`. `main.py --mcp` launches it + prints config snippet. Add `fastmcp`. → `feat: MCP server for Claude Code (request_credentials, list_available_services, revoke_token)`
-11. **Audit Log** — `audit/log.py`: `audit_log` table, event constants, `log_event` / `get_recent` / `get_by_agent` / `get_by_service`. Wire into submit/approve/deny/expire/issue/revoke. `GET /audit` + dashboard panel. → `feat: append-only audit log wired to all credential lifecycle events`
-12. **OAuth2** — `auth/oauth.py`: `OAuthAdapter` base, `GoogleOAuth` / `GitHubOAuth` (authorization_url/exchange_code/refresh). `config.OAUTH_SERVICES` + `OAUTH_REDIRECT_URI`. Routes `/auth/oauth/{service}` + `/auth/callback`. Approve route uses/refreshes tokens → hint type oauth. Add `authlib requests`. → `feat: OAuth2 flow for Google and GitHub (real access tokens in JWT hint)`
-13. **Headless Login** — `auth/session.py`: `headless_login` (async Playwright), `get_or_refresh_session` (6h cache), `sync_headless_login`. Adapters `generic` / `google` / `github` (raise `TwoFactorRequired` / `LoginFailed`). `config.SITE_ADAPTERS`. Approve route (non-OAuth) → cookies → hint type session. Add `playwright`. → `feat: Playwright headless login with Google, GitHub, and generic form adapters`
-14. **SDK get_session() wired** — `GET /agent/hint/{id}` returns decrypted hint once (then 410, `hint_consumed`), logs `TOKEN_HINT_FETCHED`. `get_session` builds real OAuth/session session. → `feat: SDK get_session() wired to real OAuth tokens and session cookies`
-15. **Demo Polish** — `simulate_agent.py` (`--service`, `--mode sdk|mcp`, graceful errors), `DEMO.md` (3-terminal, Act I/II/III), `README.md` final. → `feat: demo polish, simulate_agent.py final form, complete DEMO.md and README`
+1. **Scaffold** — `config.py` (ports, paths, TTLs, `SERVICE_ADAPTERS` stub), `main.py` (`--mcp` flag, clean imports, prints startup line, exits), `requirements.txt` (backend deps only), `ui/` shell scaffolded, `.gitignore`, `LICENSE` (MIT 2026), `README.md`, package dirs + `__init__.py`. → `chore: scaffold GoldenRetriever project structure and entry point`
+2. **Crypto primitives** — `core/crypto.py`: Argon2id, AES-GCM, Ed25519 (keygen/sign/verify/to-from-bytes), `encode/decode_jwt` (EdDSA), `derive_hint_key` (HMAC-SHA256), `random_id`. `core/test_crypto.py` (use m=256). → `feat: crypto primitives (Argon2id, AES-GCM, Ed25519, JWT)`
+3. **Encrypted vault** — `core/vault.py`: SQLite store for tenants, service accounts (usernames/passwords/OAuth config), revoked tokens; create/unlock (Argon2id), CRUD with AES-GCM blobs, secrets masked on read. `core/test_vault.py`. → `feat: encrypted multi-tenant vault (SQLite + AES-256-GCM)`
+4. **Policy engine (task → scope)** — `policy/engine.py`: given a service + task/prompt, derive the minimum permission allow-list; service-level action catalogs; conservative default (deny anything not clearly required). `policy/test_engine.py` covering e.g. "compare Amazon prices" → no purchase. → `feat: task-to-scope policy engine with least-privilege defaults`
+5. **Request queue** — `agent/queue.py`: `AccessRequest` dataclass, state machine (submit/approve/deny/attach_token/expire_stale), background expiry thread, per-agent rate limit. `agent/test_queue.py`. → `feat: access request queue with state machine and auto-expiry`
+6. **Agent REST API** — `agent/api.py` Blueprint `/agent`: `POST /request` (task + service → scoped pending request), `GET /token/{id}` (poll: 200/202/403/410/404), `DELETE /token/{id}`, `GET /pubkey`. `agent/test_api.py`. → `feat: agent REST API (scoped request, poll, revoke, pubkey)`
+7. **Dashboard backend + SocketIO** — `dashboard/app.py` Flask+SocketIO (`async_mode="threading"`): `init_app`, routes for status / accounts / pending requests / audit; emits `request:new` / `request:resolved` / `token:revoked`. Stable JSON contract the UI binds to. → `feat: dashboard backend with real-time request feed`
+8. **UI shell (swappable, polished)** — `ui/`: full polished frontend over the Phase 7 API — pending-request approval cards showing the **derived scope** per request, accounts manager, active tokens + session status, audit feed, live updates via SocketIO. Clean component seams so the final sketch swaps in without touching the API. → `feat: polished swappable dashboard UI with scoped approval cards`
+9. **Token issuance** — `core/tokens.py`: load/create Ed25519 identity, `issue_token` (embed scope claim + encrypt hint + sign), `verify_token` (sig + expiry + revocation + scope), `decrypt_hint`. Wire approve route → issue scoped token; revoke route. `core/test_tokens.py`. → `feat: Ed25519 scoped JWT issuance, verification, and revocation`
+10. **Full approval loop** — wire dashboard `approve`/`deny` → policy scope → issue token → emit resolution; UI cards reflect live state; agent polling completes the round-trip. Smoke test `simulate_agent.py`. → `feat: wire full scoped approval loop (approve → scoped JWT → polling agent)`
+11. **Python SDK** — `agent/sdk.py` `GoldenRetrieverClient`: `request_access(service, task)` (poll), `verify_token` (cached pubkey), `revoke`, `get_session` (oauth→Bearer / session→cookie jar). Exceptions `ApprovalDenied/Expired/Timeout`. `agent/test_sdk.py`. → `feat: GoldenRetrieverClient SDK with scoped get_session()`
+12. **MCP server (Claude CLI agent)** — `agent/mcp_server.py` FastMCP: `request_access(service, task)` (blocks, returns scoped token, never raises), `list_available_services`, `revoke_token`. `main.py --mcp` launches it + prints config snippet for the Claude CLI agent. Add `fastmcp`. → `feat: MCP server for Claude CLI agent (request_access, list_services, revoke)`
+13. **Audit log** — `audit/log.py`: append-only `audit_log` table, event constants (incl. `SCOPE_DERIVED`, `TOKEN_ISSUED`, `SESSION_ENDED`), `log_event` / `get_recent` / filters. Wire into every lifecycle point; surface in UI audit feed. → `feat: append-only audit log wired to all access lifecycle events`
+14. **OAuth + headless service auth** — `auth/oauth.py` (Google/GitHub auth-code + refresh, encrypted storage) and `auth/session.py` (`headless_login` async Playwright, 6h encrypted cookie cache) + `auth/adapters/` (generic/google/github; raise `TwoFactorRequired`/`LoginFailed`). Approve route picks per service → fills the token hint. Add `authlib requests playwright`. → `feat: per-service OAuth and Playwright headless login for token hints`
+15. **Session lifecycle + scope enforcement demo** — bind tokens to a session; auto-expire on session end; `GET /agent/hint/{id}` one-time hint fetch; `get_session()` builds the real scoped session. UI shows a live session ending + a denied out-of-scope action. → `feat: session-bound expiry and live scope-enforcement demo`
+16. **Demo polish + UI swap-readiness** — `simulate_agent.py` final (`--service`, `--task`, `--mode sdk|mcp`, graceful errors), `DEMO.md` (multi-act: scoped approve → agent acts in-scope → out-of-scope denied → revoke → session-end expiry → audit), confirm UI swaps cleanly via the frozen API contract, `README.md` final. → `feat: demo polish, simulate_agent final, DEMO.md, UI swap verified`
+
+> When the final UI sketch arrives, it replaces `ui/` against the same Phase 7 API contract — no backend phase is touched.
 
 ---
 
 ## LIVING DOCS (update each phase before the commit block)
 - **README.md** — new features, updated layout.
-- **requirements.txt** — append new deps only (never pre-add).
+- **requirements.txt** / **ui/package.json** — append new deps only (never pre-add).
 - **.gitignore** — new runtime artifacts.
 - **config.py** — new keys near related ones, short comment.
-> Rule: if the phase changed how someone installs, runs, or demos, the docs change in the same phase.
+- **API contract note in README** — if a phase changes any route the UI binds to, document it (the UI depends on this staying stable).
+> Rule: if the phase changed how someone installs, runs, or demos the project, the docs change in the same phase.
 
 ---
 
@@ -86,19 +96,22 @@ Build bottom-up. Each phase leaves the repo importable and runnable. Restate the
   Suggested: /clear before Phase <n+1>.
   ```
 - Conventional commits: `chore feat fix docs test refactor`.
-- Never stage `vault.db`, `.auth_state/`, `.gr_identity*`, `*.key`.
+- Never stage secrets, vault DBs, identity keys, cookie caches, or `node_modules/`.
 
 ---
 
 ## ANTI-PATTERNS (never do these)
-- ❌ Sending raw passwords to agents — tokens only.
-- ❌ Logging passwords anywhere (audit logs agent_id + service, never credentials).
+- ❌ Sending raw passwords to agents — scoped tokens only.
+- ❌ Issuing a token broader than the task requires — least privilege always; default deny.
+- ❌ Logging secrets anywhere (audit logs tenant/agent/service/scope, never credentials).
 - ❌ Storing plaintext credentials, OAuth tokens, or cookies — always AES-GCM encrypted.
-- ❌ Auto-approving requests — every approval is explicit user action.
+- ❌ Auto-approving requests — every grant is an explicit admin action.
+- ❌ Renewable or session-outliving tokens — expire at session end, re-request.
+- ❌ A feature that can't be shown in the UI — if it can't be demoed, rethink it.
+- ❌ Coupling the UI to backend internals — bind only to the documented API contract.
 - ❌ Silent try/except — fail loudly to console + dashboard.
 - ❌ Running git / `git add -A` / `git add .`.
 - ❌ Pre-adding deps before they're used.
-- ❌ Renewable tokens — always re-request.
 - ❌ Abstractions/refactors not required for the demo.
 - ❌ Full test-suite runs — single-file only.
 
@@ -107,32 +120,35 @@ Build bottom-up. Each phase leaves the repo importable and runnable. Restate the
 ## MOCKS (flag every one with `# MOCK`)
 - OAuth app credentials (placeholder client_id/secret; flow is real once filled).
 - Argon2id timing in tests (m=256).
-- License/payment gate (`POST /license` for demo only).
+- Billing / tenant signup gate (no real payment for the demo).
 - 2FA — raise `TwoFactorRequired`, surface it; don't intercept OTPs.
-- Bark key (build-completion ping only, not a product feature; prints to console if empty).
+- Any downstream third-party action the agent performs (mock the call, show the scope check passing/failing).
 
 ---
 
-## DEMO ARC (happy path — practice to 90s)
+## DEMO ARC (happy path — practice to ~90s, all visible in the UI)
 ```
-A: python main.py            # dashboard :5001
-B: python main.py --mcp      # MCP server
-C: python simulate_agent.py --service Gmail
-1. [C] Requesting Gmail credentials…
-2. Dashboard shows pending card with 60s countdown
-3. Click Approve
-4. [C] ✅ Token received (exp 15 min)
-5.     📬 Fetching inbox… 200 OK · 3 unread
-6. Audit: SUBMITTED → APPROVED → TOKEN_ISSUED → HINT_FETCHED
-7. Click Revoke
-8. [C] next request: ❌ Token revoked — re-request required
+A: python main.py            # backend + dashboard :5001
+B: npm --prefix ui run dev   # UI
+C: python main.py --mcp      # MCP server for the Claude CLI agent
+Agent: request_access("Amazon", "compare prices on these 3 items")
+
+1. Agent requests Amazon access for a price-comparison task
+2. UI pending card appears: derived scope = [search, read], NO purchase
+3. Admin clicks Approve
+4. Agent receives scoped JWT (exp: session end)
+5. Agent searches prices — in scope, 200 OK
+6. Agent attempts checkout — out of scope, blocked + shown in UI
+7. Session ends → token auto-expires
+8. Audit feed: SUBMITTED → SCOPE_DERIVED → APPROVED → TOKEN_ISSUED → SCOPE_DENIED → SESSION_ENDED
+9. Admin revokes a live token → agent's next call → 410
 ```
-The demo is the pitch: **agents ask, users decide, passwords never leave the vault.**
+The demo is the pitch: **agents get exactly what the task needs, nothing more, and only until the job is done.**
 
 ---
 
 ## MILESTONES & NOTIFICATIONS
-The Bark `curl` below is a **Claude Code build-completion ping to my phone** — it is NOT a product feature (GoldenRetriever itself has no phone notifications; the dashboard is how requests are noticed). Key milestones: Phase 3, 5, 8, 10, 13, 15. On each, run:
+The Bark `curl` below is a **build-completion ping to my phone** — NOT a product feature. After finishing everything (or at a key milestone: Phase 3, 4, 8, 10, 12, 16), run:
 ```bash
 curl -s "https://api.day.app/Ty6uAVeqkSq5D2u35yMotQ/Alert%20Sound/[URL_ENCODED_MESSAGE]?sound=birdsong"
 ```
@@ -140,24 +156,26 @@ Then print:
 ```
 === 🐕 MILESTONE COMPLETE - READY FOR REVIEW 🐕 ===
 DONE: [what was built]
-DOCS: [README/reqs/.gitignore/config updated? Y/N]
+DOCS: [README/reqs/.gitignore/config/API-contract updated? Y/N]
 NEXT: [immediate next step]
 FILES: [files touched]
-CREDS_EXPOSED?: [touched plaintext passwords? must be N]
+DEMOABLE?: [can this be shown in the UI? Y/N — must be Y once dashboard exists]
+SECRETS_EXPOSED?: [touched plaintext credentials? must be N]
 ```
 
 ---
 
 ## WORKFLOW
 1. Restate the phase goal in one line before starting.
-2. Build in order — one phase at a time, each importable/runnable.
+2. Build in order — one phase at a time, each importable/runnable and (post-dashboard) demoable.
 3. Edit existing files; create new only when none fits.
 4. Hardcode config in `config.py`. No `.env`.
 5. Throw visible errors to console + dashboard. No silent try/except.
-6. Raw passwords never leave `core/vault.py` — every other layer uses VSK/tokens/hints.
-7. Update living docs before each commit block.
-8. Ask before: deleting files, adding packages, schema changes, OAuth app registration.
-9. Code like a lazy senior dev — no abstractions until needed twice.
+6. Raw passwords never leave `core/vault.py`; every other layer uses scoped tokens/hints.
+7. Keep the UI bound to the documented API contract so the final sketch swaps in cleanly.
+8. Update living docs before each commit block.
+9. Ask before: deleting files, adding packages, schema changes, OAuth app registration, or changing a route the UI depends on.
+10. Code like a lazy senior dev — no abstractions until needed twice.
 
 ## CONTEXT HYGIENE
 - Append to every reply: `CTX: <low|med|HIGH>`

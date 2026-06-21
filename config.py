@@ -9,9 +9,9 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "vault.db")
 
 # Token / request lifetimes (seconds)
 TOKEN_TTL_SECONDS = 900   # 15 min — never renewable, always re-request
-REQUEST_TTL_SECONDS = 60  # pending request expires after 60s
+REQUEST_TTL_SECONDS = 60  # pending request expires if not acted on
 
-# Ed25519 identity key file (never commit this)
+# Ed25519 identity key (never commit this file)
 TOKEN_KEY_FILE = os.path.join(os.path.dirname(__file__), ".gr_identity.key")
 
 # OAuth redirect base (fill in real values before running OAuth flow)
@@ -31,8 +31,8 @@ OAUTH_SERVICES = {
     },
 }
 
-# Headless-login site adapters (stub — populated in Phase 13)
-SITE_ADAPTERS: dict = {}
+# Headless-login site adapters (stub — populated in Phase 14)
+SERVICE_ADAPTERS: dict = {}
 
 # Build-completion ping key (Claude Code only — not a product feature)
-BARK_KEY = os.environ.get("BARK_KEY", "")
+BARK_KEY = os.environ.get("BARK_KEY", "Ty6uAVeqkSq5D2u35yMotQ")
