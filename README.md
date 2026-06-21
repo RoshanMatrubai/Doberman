@@ -18,6 +18,16 @@ npm --prefix ui install && npm --prefix ui run dev   # frontend dev server
 
 ---
 
+## Build Status
+
+| Phase | What | Status |
+|---|---|---|
+| 1 | Scaffold — config, main, ui shell, package dirs | ✅ |
+| 2 | Crypto primitives — Argon2id, AES-256-GCM, Ed25519, EdDSA JWT | ✅ |
+| 3–16 | Vault → Policy → Queue → APIs → UI → Tokens → Audit → OAuth → Demo | 🔜 |
+
+---
+
 ## Architecture
 
 | Layer | Choice |
