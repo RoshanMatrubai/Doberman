@@ -1,0 +1,7 @@
+flask
+flask-socketio
+cryptography
+argon2-cffi
+PyJWT
+pytest
+flake8

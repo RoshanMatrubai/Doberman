@@ -1,0 +1,32 @@
+# Runtime secrets — never commit
+vault.db
+.gr_identity.key
+.gr_identity.key.pub
+*.key
+*.pem
+
+# Encrypted session cache
+.auth_state/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp
