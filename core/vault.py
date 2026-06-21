@@ -82,6 +82,10 @@ class Vault:
             raise VaultError("Vault integrity check failed")
         return Vault(db_path, key)
 
+    def get_key(self) -> bytes:
+        """Expose vault key as master secret for per-hint HMAC derivation."""
+        return self._key
+
     def close(self):
         self._conn.close()
 

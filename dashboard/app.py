@@ -41,6 +41,7 @@ from flask import Flask, jsonify, request as flask_request
 from flask_socketio import SocketIO
 
 from agent.queue import InvalidTransition, RequestNotFound, RequestQueue, RequestState
+from core.tokens import issue_token
 from core.vault import Vault
 
 _queue: RequestQueue | None = None
@@ -80,7 +81,7 @@ def create_dashboard_app(queue: RequestQueue, vault: Vault) -> tuple[Flask, Sock
         return jsonify({
             "status": "ok",
             "pending_count": len(_queue.list_pending()),
-            "version": "0.7.0",
+            "version": "0.9.0",
         })
 
     # --- Requests ---
@@ -108,6 +109,9 @@ def create_dashboard_app(queue: RequestQueue, vault: Vault) -> tuple[Flask, Sock
     def api_approve(request_id: str):
         try:
             req = _queue.approve(request_id)
+            token_str, token_id = issue_token(req, _vault.get_key())
+            _queue.attach_token(request_id, token_id, token_jwt=token_str)
+            req = _queue.get(request_id)
         except RequestNotFound:
             return jsonify({"error": "not found"}), 404
         except InvalidTransition as exc:
@@ -115,7 +119,7 @@ def create_dashboard_app(queue: RequestQueue, vault: Vault) -> tuple[Flask, Sock
         except Exception as exc:
             print(f"[dashboard] approve error: {exc}", flush=True)
             return jsonify({"error": "internal error"}), 500
-        return jsonify({"request": req.to_dict(), "message": "approved"})
+        return jsonify({"request": req.to_dict(), "message": "approved", "token": token_str})
 
     @app.post("/api/requests/<request_id>/deny")
     def api_deny(request_id: str):
@@ -133,7 +137,10 @@ def create_dashboard_app(queue: RequestQueue, vault: Vault) -> tuple[Flask, Sock
     @app.delete("/api/requests/<request_id>")
     def api_revoke(request_id: str):
         try:
+            req_before = _queue.get(request_id)
             req = _queue.revoke(request_id)
+            if req_before and req_before.token_id:
+                _vault.revoke_token(req_before.token_id, req_before.tenant_id)
         except RequestNotFound:
             return jsonify({"error": "not found"}), 404
         except InvalidTransition as exc:
@@ -166,7 +173,7 @@ def create_dashboard_app(queue: RequestQueue, vault: Vault) -> tuple[Flask, Sock
 
     @app.get("/")
     def root():
-        return jsonify({"service": "GoldenRetriever", "version": "0.7.0", "status": "ok"})
+        return jsonify({"service": "GoldenRetriever", "version": "0.9.0", "status": "ok"})
 
     return app, sio
 

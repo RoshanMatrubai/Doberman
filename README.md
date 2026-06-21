@@ -30,7 +30,8 @@ npm --prefix ui install && npm --prefix ui run dev   # frontend dev server
 | 6 | Agent REST API — POST /request, GET/DELETE /token/<id>, GET /pubkey on :5002 | ✅ |
 | 7 | Dashboard backend — Flask+SocketIO, stable JSON API, real-time events | ✅ |
 | 8 | Polished dashboard UI — approval cards, scope badges, accounts, audit feed, live SocketIO | ✅ |
-| 9–16 | Tokens → Audit → OAuth → Demo | 🔜 |
+| 9 | Token issuance — Ed25519 JWT, AES-GCM hint, verify/revoke/decrypt, wired to approve+revoke | ✅ |
+| 10–16 | Full loop → Audit → OAuth → Demo | 🔜 |
 
 ---
 
@@ -84,7 +85,7 @@ All routes on `:5001`. Agent API lives on `:5002`.
 | GET | `/api/status` | Health + pending count |
 | GET | `/api/requests?state=PENDING` | Pending (or filtered) requests |
 | GET | `/api/requests/all?limit=100` | All requests, newest first |
-| POST | `/api/requests/<id>/approve` | Approve a pending request |
+| POST | `/api/requests/<id>/approve` | Approve → issues scoped JWT; returns `{request, message, token}` |
 | POST | `/api/requests/<id>/deny` | Deny a pending request |
 | DELETE | `/api/requests/<id>` | Revoke an approved/pending request |
 | GET | `/api/tenants` | List tenants |

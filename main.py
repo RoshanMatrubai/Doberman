@@ -37,7 +37,7 @@ def main():
     dashboard_app, sio = create_dashboard_app(queue, vault)
 
     # Agent API runs on a separate port in a background thread
-    agent_app = create_agent_app(queue)
+    agent_app = create_agent_app(queue, vault)
     agent_server = make_server("0.0.0.0", config.AGENT_API_PORT, agent_app)
     agent_thread = threading.Thread(
         target=agent_server.serve_forever,

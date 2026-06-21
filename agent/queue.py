@@ -51,6 +51,7 @@ class AccessRequest:
     expires_at: datetime.datetime
     resolved_at: Optional[datetime.datetime] = None
     token_id: Optional[str] = None
+    token_jwt: Optional[str] = None
 
     def is_pending(self) -> bool:
         return self.state == RequestState.PENDING
@@ -68,6 +69,7 @@ class AccessRequest:
             "expires_at": self.expires_at.isoformat(),
             "resolved_at": self.resolved_at.isoformat() if self.resolved_at else None,
             "token_id": self.token_id,
+            "token_jwt": self.token_jwt,
         }
 
 
@@ -161,8 +163,8 @@ class RequestQueue:
         self._fire("request:resolved", {"request": req.to_dict()})
         return req
 
-    def attach_token(self, request_id: str, token_id: str) -> AccessRequest:
-        """Record the issued token ID on an APPROVED request."""
+    def attach_token(self, request_id: str, token_id: str, token_jwt: str = "") -> AccessRequest:
+        """Record the issued token ID and JWT on an APPROVED request."""
         with self._lock:
             req = self._get_or_raise(request_id)
             if req.state != RequestState.APPROVED:
@@ -170,6 +172,7 @@ class RequestQueue:
                     f"Cannot attach token to request in state {req.state.value}"
                 )
             req.token_id = token_id
+            req.token_jwt = token_jwt
             self._persist(req)
             return req
 
@@ -255,9 +258,15 @@ class RequestQueue:
                 created_at TEXT NOT NULL,
                 expires_at TEXT NOT NULL,
                 resolved_at TEXT,
-                token_id TEXT
+                token_id TEXT,
+                token_jwt TEXT
             )
         """)
+        # Migrate existing DBs that predate the token_jwt column
+        try:
+            self._conn.execute("ALTER TABLE requests ADD COLUMN token_jwt TEXT")
+        except Exception:
+            pass
         self._conn.commit()
 
     def _load_pending(self):
@@ -274,8 +283,8 @@ class RequestQueue:
             """
             INSERT OR REPLACE INTO requests
               (id, tenant_id, agent_id, service, task, scope, state,
-               created_at, expires_at, resolved_at, token_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               created_at, expires_at, resolved_at, token_id, token_jwt)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 req.id, req.tenant_id, req.agent_id, req.service, req.task,
@@ -283,6 +292,7 @@ class RequestQueue:
                 req.created_at.isoformat(), req.expires_at.isoformat(),
                 req.resolved_at.isoformat() if req.resolved_at else None,
                 req.token_id,
+                req.token_jwt,
             ),
         )
         self._conn.commit()
@@ -336,4 +346,5 @@ def _row_to_request(row: sqlite3.Row) -> AccessRequest:
             if row["resolved_at"] else None
         ),
         token_id=row["token_id"],
+        token_jwt=row["token_jwt"],
     )

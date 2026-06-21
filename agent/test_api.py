@@ -22,7 +22,9 @@ from agent.queue import RequestQueue
 def reset_globals(tmp_path, monkeypatch):
     """Isolate module-level globals and redirect identity key to tmp dir."""
     monkeypatch.setattr(api_module, "_queue", None)
-    monkeypatch.setattr(api_module, "_pubkey_bytes", None)
+    monkeypatch.setattr(api_module, "_vault", None)
+    import core.tokens
+    monkeypatch.setattr(core.tokens, "_identity_key", None)
     monkeypatch.setattr(config, "TOKEN_KEY_FILE", str(tmp_path / "test.key"))
 
 

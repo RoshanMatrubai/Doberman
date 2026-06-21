@@ -17,15 +17,13 @@ from agent.queue import (
     InvalidTransition, RateLimitExceeded, RequestNotFound,
     RequestQueue, RequestState,
 )
-from core.crypto import (
-    ed25519_private_from_bytes, ed25519_private_to_bytes,
-    ed25519_public_to_bytes, generate_ed25519_keypair,
-)
+from core.tokens import get_public_key_bytes
+from core.vault import Vault
 
 agent_bp = Blueprint("agent", __name__, url_prefix="/agent")
 
 _queue: RequestQueue | None = None
-_pubkey_bytes: bytes | None = None
+_vault: Vault | None = None
 
 
 def init_queue(queue: RequestQueue) -> None:
@@ -33,27 +31,15 @@ def init_queue(queue: RequestQueue) -> None:
     _queue = queue
 
 
+def init_vault(vault: Vault) -> None:
+    global _vault
+    _vault = vault
+
+
 def _get_queue() -> RequestQueue:
     if _queue is None:
         raise RuntimeError("Queue not initialized — call init_queue() first")
     return _queue
-
-
-def _load_pubkey() -> bytes:
-    """Return cached public key bytes; load or generate from TOKEN_KEY_FILE."""
-    global _pubkey_bytes
-    if _pubkey_bytes is not None:
-        return _pubkey_bytes
-    try:
-        with open(config.TOKEN_KEY_FILE, "rb") as f:
-            priv = ed25519_private_from_bytes(f.read())
-    except FileNotFoundError:
-        priv, _ = generate_ed25519_keypair()
-        with open(config.TOKEN_KEY_FILE, "wb") as f:
-            f.write(ed25519_private_to_bytes(priv))
-        print(f"[agent-api] generated Ed25519 identity key → {config.TOKEN_KEY_FILE}", flush=True)
-    _pubkey_bytes = ed25519_public_to_bytes(priv.public_key())
-    return _pubkey_bytes
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +82,11 @@ def poll_token(request_id: str):
     if state == RequestState.PENDING:
         return jsonify({"status": "PENDING", "request": data}), 202
     if state == RequestState.APPROVED:
-        return jsonify({"status": "APPROVED", "request": data, "token": data.get("token_id")}), 200
+        return jsonify({
+            "status": "APPROVED",
+            "request": data,
+            "token": data.get("token_jwt"),   # full signed JWT
+        }), 200
     if state == RequestState.DENIED:
         return jsonify({"status": "DENIED", "request": data}), 403
     # EXPIRED or any other terminal state
@@ -105,11 +95,14 @@ def poll_token(request_id: str):
 
 @agent_bp.delete("/token/<request_id>")
 def revoke_token(request_id: str):
-    """Cancel a pending request or revoke an approved one."""
+    """Cancel a pending request or revoke an approved one; also marks JWT revoked."""
     q   = _get_queue()
     req = q.get(request_id)
     if req is None:
         return jsonify({"error": "not found"}), 404
+
+    token_id_before = req.token_id
+    tenant_id = req.tenant_id
 
     try:
         q.revoke(request_id)
@@ -118,6 +111,12 @@ def revoke_token(request_id: str):
     except RequestNotFound as exc:
         return jsonify({"error": str(exc)}), 404
 
+    if _vault and token_id_before:
+        try:
+            _vault.revoke_token(token_id_before, tenant_id)
+        except Exception as exc:
+            print(f"[agent-api] vault revoke error: {exc}", flush=True)
+
     return jsonify({"status": "revoked", "request_id": request_id}), 200
 
 
@@ -125,7 +124,7 @@ def revoke_token(request_id: str):
 def get_pubkey():
     """Return the GoldenRetriever Ed25519 public key agents use to verify tokens."""
     try:
-        pub = _load_pubkey()
+        pub = get_public_key_bytes()
     except Exception as exc:
         print(f"[agent-api] pubkey error: {exc}", flush=True)
         return jsonify({"error": "could not load public key"}), 500
@@ -136,10 +135,12 @@ def get_pubkey():
 # App factory
 # ---------------------------------------------------------------------------
 
-def create_agent_app(queue: RequestQueue | None = None) -> Flask:
+def create_agent_app(queue: RequestQueue | None = None, vault: Vault | None = None) -> Flask:
     """Create a standalone Flask app wrapping the agent blueprint."""
     app = Flask(__name__)
     if queue is not None:
         init_queue(queue)
+    if vault is not None:
+        init_vault(vault)
     app.register_blueprint(agent_bp)
     return app
