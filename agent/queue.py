@@ -156,12 +156,14 @@ class RequestQueue:
         )
         return req
 
-    def approve(self, request_id: str) -> AccessRequest:
-        """Transition PENDING → APPROVED."""
+    def approve(self, request_id: str, scope_override: list | None = None) -> AccessRequest:
+        """Transition PENDING → APPROVED, optionally replacing the derived scope."""
         with self._lock:
             req = self._get_or_raise(request_id)
             if req.state != RequestState.PENDING:
                 raise InvalidTransition(f"Cannot approve request in state {req.state.value}")
+            if scope_override is not None:
+                req.scope = sorted(scope_override)
             req.state = RequestState.APPROVED
             req.resolved_at = datetime.datetime.now(datetime.UTC)
             self._persist(req)

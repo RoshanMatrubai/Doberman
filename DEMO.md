@@ -1,179 +1,146 @@
-# GoldenRetriever — Live Demo Script
-
-Target runtime: ~90 seconds for the happy path.  
-Practice this a couple of times before pitching.
+# GoldenRetriever — Demo Script
+> One command, one browser tab, five clicks. ~90 seconds.
 
 ---
 
-## Setup (do before the audience arrives)
+## 0 · Setup (once, before the demo)
 
 ```bash
-# Terminal A — backend (dashboard :5001 + agent API :5002)
-python main.py
-
-# Terminal B — frontend dev server
-npm --prefix ui install   # first time only
-npm --prefix ui run dev
-
-# Terminal C — smoke-test agent (keep ready to run)
-# python simulate_agent.py
+./start.sh
 ```
 
-Open **http://localhost:5173** (or whatever Vite prints) in a browser.  
-Confirm the Pending tab is empty and the Audit feed shows recent events.
+That's it. The script:
+- Kills anything on ports 5001, 5002, 5173.
+- Starts the backend (Flask + SocketIO on :5001 / :5002).
+- Starts the Vite dev server (React UI on :5173).
+- Opens **http://localhost:5173** in your browser automatically.
+
+You should see the GoldenRetriever bento dashboard, connection dot **green**, all four tiles visible.
 
 ---
 
-## Act 1 — Agent Requests Access (0–15 s)
+## The pitch (say this while pointing at the screen)
 
-**Say:** "An AI agent needs to compare Amazon prices. Instead of handing it a password, it calls GoldenRetriever."
-
-**Run** (Terminal C):
-```bash
-python simulate_agent.py --service amazon --task "compare prices on these 3 items"
-```
-
-**Point to:** The terminal output showing:
-```
-derived scope = ['read', 'search']
-```
-
-**Say:** "GoldenRetriever's policy engine read the task and derived the minimum permission set: search and read — *no purchase, no delete*."
-
-**Point to:** The UI Pending tab — a new approval card appeared instantly via SocketIO with:
-- Agent ID, service, task description
-- Scope badges: `search` `read`  (green)
-- No `purchase` badge — that action is absent from the derived scope
+> "Companies don't hand their AI agents passwords. GoldenRetriever gives each agent exactly the permissions one task needs — nothing more — as a short-lived signed token that expires the moment the job ends. Every grant is visible, logged, and one-click revocable."
 
 ---
 
-## Act 2 — Admin Approves (15–30 s)
+## Act 1 — Agent requests access
 
-**Say:** "The admin reviews the derived scope and decides: yes, this agent should be able to search and read, nothing more."
+**What to click:** Demo Controls bar (top center) → select **🛒 Amazon** → click **▶ Simulate Request**
 
-**Click:** the **Approve** button on the pending card.
+**What you'll see:**
+- A toast slides up: *"New request — Amazon · agent:demo-agent"*
+- A card appears in the **Pending Approvals** tile with a warm amber border flash.
+- The card shows the agent's task: *"compare prices on these 3 laptops"*
+- Beneath the task: the derived scope — `search` `read` — **no `purchase`, no `checkout`**.
 
-**Point to:**
-- The card moves off the Pending tab
-- The **Sessions** tab gains a new row with:
-  - Scope: `search read`
-  - TTL countdown (15-minute session)
-  - Token ID
-
-**In Terminal C**, the agent's poll completes:
-```
-[OK]  APPROVED — scoped JWT received
-```
-
-**Say:** "The agent receives a short-lived Ed25519-signed JWT. The scope is locked into the signature — it can't be widened without a new request and a new admin approval."
+**What to say:**
+> "The agent asked for Amazon access. Our policy engine read the task and derived the minimum scope — search and read only. The agent never sees credentials, never gets asked for them."
 
 ---
 
-## Act 3 — In-Scope Action Succeeds (30–45 s)
+## Act 2 — Admin approves
 
-**Point to** Terminal C output:
-```
-[200 OK ]  search        (price comparison search) — in scope, allowed
-[200 OK ]  read          (read product details) — in scope, allowed
-```
+**What to click:** Click **✓ Approve** on the pending card.
 
-**Point to** the Audit feed in the UI — `SCOPE_CHECK` events appear for each allowed action.
+**What you'll see:**
+- The card collapses and slides out with a spring animation.
+- The **Active Sessions** tile border flashes green; a new session card appears with a pulsing green dot, showing `search` `read` scope badges and a live TTL countdown.
+- The **Audit Log** tile (right column) streams four events:
+  - `SUBMITTED` (red)
+  - `SCOPE_DERIVED` (indigo)
+  - `APPROVED` (green)
+  - `TOKEN_ISSUED` (green)
 
-**Say:** "The agent searches and reads — both actions are in scope, both succeed."
-
----
-
-## Act 4 — Out-of-Scope Action Blocked (45–60 s)
-
-**Point to** Terminal C output:
-```
-[403 DENY]  purchase      (checkout / place order) — out of scope, SCOPE_DENIED logged
-[403 DENY]  delete        (cancel an order) — out of scope, SCOPE_DENIED logged
-```
-
-**Point to** the Audit feed — `SCOPE_DENIED` events appear for `purchase` and `delete`.
-
-**Say:** "The agent tried to check out. GoldenRetriever blocked it immediately — `purchase` was never in the signed scope, so the JWT itself proves the denial is correct. The audit event is immutable."
+**What to say:**
+> "I approve it. The agent immediately receives a short-lived Ed25519-signed JWT — scoped to exactly those two actions, expiring at session end. The audit trail is already complete."
 
 ---
 
-## Act 5 — Session Ends & Token Expires (60–75 s)
+## Act 3 — In-scope action (allowed)
 
-**Click:** **End Session** on the active session in the Sessions tab.
+**What to click:** Click **✓ In-Scope** in the Demo Controls bar.
 
-**Point to:**
-- The session row disappears (or turns red)
-- The Audit feed shows `SESSION_ENDED`
+**What you'll see:**
+- The Demo Controls bar briefly shows: `search: ALLOWED ✓` in green.
+- Audit log gets a new `ACTION_ALLOWED` event in green.
 
-**In Terminal C**:
-```
-[OK]  Session ended via dashboard — SESSION_ENDED logged in audit
-[OK]  GET /agent/token/<id>… → 410 EXPIRED ✓
-```
-
-**Say:** "Session ended. The token is dead — 410 on every subsequent poll. The agent can't reuse it, can't renew it. If it needs to do more work, it submits a new request and goes through the same approval flow."
+**What to say:**
+> "The agent tries to search Amazon. That's in scope — it goes through, green."
 
 ---
 
-## Act 6 — Full Audit Trail (75–90 s)
+## Act 4 — Out-of-scope action (blocked)
 
-**Click** the **Audit** tab in the UI.
+**What to click:** Click **✕ Blocked** in the Demo Controls bar.
 
-**Walk through** the event timeline:
-```
-SUBMITTED       → agent requested amazon access
-SCOPE_DERIVED   → policy engine derived [read, search]
-APPROVED        → admin clicked Approve
-TOKEN_ISSUED    → Ed25519 JWT issued, hint encrypted
-SCOPE_CHECK     → search — allowed
-SCOPE_CHECK     → read — allowed
-SCOPE_DENIED    → purchase — blocked
-SCOPE_DENIED    → delete — blocked
-SESSION_ENDED   → admin ended session
-```
+**What you'll see:**
+- The Demo Controls bar shows: `purchase: BLOCKED ✕` in red.
+- Audit log gets a `SCOPE_DENIED` event in red, detail shows *"purchase not in scope [search, read]"*.
 
-**Say:** "Every action is logged append-only. You get a complete, tamper-evident chain from request to expiry. Compliance, audit, incident response — all covered."
+**What to say:**
+> "The agent tries to check out. Blocked — the token literally doesn't carry purchase permission. The agent can't exceed its mandate even if the underlying service would allow it."
 
 ---
 
-## Bonus: SDK Mode
+## Act 5 — Session ends, token dies
 
-Show the same flow using the Python SDK:
-```bash
-python simulate_agent.py --mode sdk
-```
+**What to click:** In the **Active Sessions** tile, click **End Session** on the session card.
 
-Output confirms: `request_access()` blocks, `verify_token()` checks the Ed25519 signature, `get_session()` builds an authenticated `requests.Session`, `check_action()` raises `ScopeViolation` on `purchase`.
+**What you'll see:**
+- Session card disappears; a red "Session ended — Amazon (ended by admin)" banner animates in.
+- Audit log gets `SESSION_ENDED` in amber.
+- (If the agent calls the API now it gets HTTP 410 Gone.)
 
-## Bonus: MCP Mode (Claude CLI integration)
-
-Show MCP tool call simulation:
-```bash
-python simulate_agent.py --mode mcp
-```
-
-This runs the exact same logic the Claude CLI agent calls via the MCP server (`request_access`, `list_available_services`, `revoke_token`), verifying the full integration path.
-
-To wire GoldenRetriever into Claude Code's MCP config:
-```bash
-python main.py --mcp   # prints the config snippet to paste into ~/.claude.json
-```
+**What to say:**
+> "Session over. The token is dead — not expired, not invalid: gone. Any subsequent call from the agent returns 410. Re-access requires a new request, a new approval."
 
 ---
 
-## Common Questions
+## Act 6 — Show the audit trail
 
-**Q: What if the agent needs to buy something for real?**  
-A: It submits a new request with a task like "purchase item X", the policy engine includes `purchase` in the derived scope, and the admin approves that specific grant. Each grant is task-bound and expires independently.
+**What to point at:** The **Audit Log** tile (right column, full height).
 
-**Q: What if the admin is unavailable?**  
-A: The pending request expires after 60 seconds (configurable). The agent re-requests when it can be serviced. No access is ever auto-granted.
+Events in order from top:
+```
+HH:MM:SS  SESSION_ENDED   Amazon
+HH:MM:SS  SCOPE_DENIED    Amazon · [search, read] · purchase not in scope
+HH:MM:SS  ACTION_ALLOWED  Amazon · [search, read] · search
+HH:MM:SS  TOKEN_ISSUED    Amazon · [search, read]
+HH:MM:SS  APPROVED        Amazon
+HH:MM:SS  SCOPE_DERIVED   Amazon · [search, read]
+HH:MM:SS  SUBMITTED       Amazon
+```
 
-**Q: Can an agent widen its own scope?**  
-A: No. The scope is derived server-side from the task text, embedded in the signed JWT, and enforced on every API call. The agent cannot modify what it was granted.
+**What to say:**
+> "Every grant, every action, every block — immutable, timestamped, visible. This is the compliance story: you can show exactly what each agent was allowed to do, and when."
 
-**Q: What happens if a token leaks?**  
-A: It's scoped to a specific task and expires at session end (max 15 minutes). The admin can revoke it instantly via the dashboard. The audit log records exactly what actions were taken with it before revocation.
+---
 
-**Q: Is this production-ready?**  
-A: The crypto is production-grade (Argon2id, AES-256-GCM, Ed25519). The OAuth and Playwright service adapters use real provider flows. The placeholder client IDs in `config.py` need replacing with real app registrations before pointing at live services.
+## Optional extras (if time / if asked)
+
+| Question / Prompt | Action |
+|---|---|
+| "Show me GitHub" | Select 🐱 GitHub → Simulate Request → Approve |
+| "What if Slack?" | Select 💬 Slack → Simulate Request — derived scope: `read`, `summarize` |
+| "Revoke live?" | With an active session, click End Session mid-demo — 410 immediately |
+| "Multiple agents?" | Simulate Request twice without approving — two cards in Pending tile |
+| "MCP server?" | `python3 main.py --mcp` — prints Claude CLI config snippet for the stdio MCP server |
+
+---
+
+## Teardown
+
+Press **Ctrl+C** in the terminal where `start.sh` is running. It kills both processes cleanly.
+
+---
+
+## Common gotchas
+
+| Symptom | Fix |
+|---|---|
+| Connection dot stays grey | Backend didn't start — check `/tmp/gr-backend.log` |
+| "No active sessions" on Blocked click | Approve a request first (Act 2) |
+| Card doesn't disappear after Approve | SocketIO may be disconnected — refresh the tab |
+| Port already in use | `start.sh` auto-kills on startup; if it fails, `lsof -ti:5001 \| xargs kill` |

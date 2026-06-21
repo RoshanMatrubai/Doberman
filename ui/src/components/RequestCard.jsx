@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { ScopeList } from './ScopeBadge'
 import { approve, deny, revoke } from '../api'
+import { useCursorGlow } from '../hooks'
 
 const SVC_ICONS = {
   amazon: '🛒', google: '🔍', github: '🐱',
@@ -14,7 +15,7 @@ const STATE_BADGE = {
   EXPIRED:  { cls: 'badge--muted',   label: 'Expired' },
 }
 
-function fmt(iso) {
+function fmtTime(iso) {
   if (!iso) return '—'
   return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
@@ -26,8 +27,9 @@ function fmtDate(iso) {
 
 export default function RequestCard({ request: initial, flash = false, onResolved }) {
   const [req, setReq] = useState(initial)
-  const [loading, setLoading] = useState(null) // 'approve'|'deny'|'revoke'
+  const [loading, setLoading] = useState(null)
   const [error, setError] = useState(null)
+  const { ref, handleMouseMove } = useCursorGlow()
 
   const stateInfo = STATE_BADGE[req.state] ?? { cls: 'badge--muted', label: req.state }
   const icon = SVC_ICONS[req.service?.toLowerCase()] ?? '🔑'
@@ -48,13 +50,17 @@ export default function RequestCard({ request: initial, flash = false, onResolve
   }
 
   return (
-    <div className={`card card--${req.state}${flash ? ' card--flash' : ''}`}>
+    <div
+      ref={ref}
+      className={`card card--${req.state}${flash ? ' card--flash' : ''}`}
+      onMouseMove={handleMouseMove}
+    >
       <div className="card__header">
         <div className="card__service">
           <span className="card__svc-icon">{icon}</span>
           <div>
             <div className="card__svc-name">{req.service}</div>
-            <div className="card__svc-agent">agent:{req.agent_id?.slice(0, 12)}</div>
+            <div className="card__svc-agent">agent:{req.agent_id?.slice(0, 14)}</div>
           </div>
         </div>
         <div className="card__header-right">
@@ -84,7 +90,7 @@ export default function RequestCard({ request: initial, flash = false, onResolve
           {req.state === 'PENDING' && (
             <div className="card__meta-item">
               <span className="card__meta-label">Expires</span>
-              <span className="card__meta-value">{fmt(req.expires_at)}</span>
+              <span className="card__meta-value">{fmtTime(req.expires_at)}</span>
             </div>
           )}
           {req.resolved_at && (
@@ -115,14 +121,18 @@ export default function RequestCard({ request: initial, flash = false, onResolve
             disabled={!!loading}
             onClick={() => act('approve', approve)}
           >
-            {loading === 'approve' ? <><span className="spinner" /> Approving…</> : '✓ Approve'}
+            {loading === 'approve'
+              ? <><span className="spinner" /> Approving…</>
+              : '✓ Approve'}
           </button>
           <button
             className="btn btn--danger"
             disabled={!!loading}
             onClick={() => act('deny', deny)}
           >
-            {loading === 'deny' ? <><span className="spinner" /> Denying…</> : '✕ Deny'}
+            {loading === 'deny'
+              ? <><span className="spinner" /> Denying…</>
+              : '✕ Deny'}
           </button>
         </div>
       )}
@@ -134,7 +144,9 @@ export default function RequestCard({ request: initial, flash = false, onResolve
             disabled={!!loading}
             onClick={() => act('revoke', revoke)}
           >
-            {loading === 'revoke' ? <><span className="spinner" /> Revoking…</> : '⊘ Revoke Token'}
+            {loading === 'revoke'
+              ? <><span className="spinner" /> Revoking…</>
+              : '⊘ Revoke Token'}
           </button>
         </div>
       )}

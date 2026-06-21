@@ -1,14 +1,6 @@
-// Classifies scope actions from the policy engine into visual tiers.
-const DESTRUCTIVE = new Set([
-  'purchase', 'delete', 'review', 'write',
-  'email_send', 'calendar_write', 'drive_write',
-  'issue_write', 'pr_write', 'repo_write',
-  'send_message', 'create_channel',
-])
-
 function classify(action) {
-  if (DESTRUCTIVE.has(action) || action.endsWith('_write') || action.endsWith('_send'))
-    return 'destructive'
+  if (action === 'purchase' || action === 'delete') return 'destructive'
+  if (action === 'write') return 'write'
   return 'read'
 }
 

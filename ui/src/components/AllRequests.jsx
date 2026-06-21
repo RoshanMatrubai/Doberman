@@ -7,8 +7,8 @@ const STATES = ['ALL', 'PENDING', 'APPROVED', 'DENIED', 'EXPIRED']
 
 export default function AllRequests() {
   const [requests, setRequests] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [filter, setFilter] = useState('ALL')
+  const [loading, setLoading]   = useState(true)
+  const [filter, setFilter]     = useState('ALL')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -24,35 +24,26 @@ export default function AllRequests() {
 
   useEffect(() => { load() }, [load])
 
-  // Live sync — update or insert request when state changes
   useEffect(() => {
     function onUpdate({ request }) {
       setRequests(prev => {
         const idx = prev.findIndex(r => r.id === request.id)
-        if (idx >= 0) {
-          const next = [...prev]
-          next[idx] = request
-          return next
-        }
+        if (idx >= 0) { const n = [...prev]; n[idx] = request; return n }
         return [request, ...prev]
       })
     }
 
-    function onNew({ request }) { onUpdate({ request }) }
-
     function onRevoke({ request_id, state }) {
-      setRequests(prev => prev.map(r =>
-        r.id === request_id ? { ...r, state } : r
-      ))
+      setRequests(prev => prev.map(r => r.id === request_id ? { ...r, state } : r))
     }
 
-    socket.on('request:new', onNew)
+    socket.on('request:new',      onUpdate)
     socket.on('request:resolved', onUpdate)
-    socket.on('token:revoked', onRevoke)
+    socket.on('token:revoked',    onRevoke)
     return () => {
-      socket.off('request:new', onNew)
+      socket.off('request:new',      onUpdate)
       socket.off('request:resolved', onUpdate)
-      socket.off('token:revoked', onRevoke)
+      socket.off('token:revoked',    onRevoke)
     }
   }, [])
 
@@ -83,7 +74,10 @@ export default function AllRequests() {
               className={`filter-btn${filter === s ? ' filter-btn--active' : ''}`}
               onClick={() => setFilter(s)}
             >
-              {s} {counts[s] > 0 && <span style={{ opacity: .7 }}>({counts[s]})</span>}
+              {s}
+              {counts[s] > 0 && (
+                <span style={{ opacity: 0.65, marginLeft: 4 }}>({counts[s]})</span>
+              )}
             </button>
           ))}
         </div>
@@ -92,7 +86,7 @@ export default function AllRequests() {
           <div className="state-loading"><span className="spinner" /> Loading…</div>
         ) : visible.length === 0 ? (
           <div className="state-empty">
-            <span className="state-empty__icon">📭</span>
+            <span className="state-empty__icon">≡</span>
             <h3>No requests yet</h3>
             <p>Access requests submitted by agents will appear here.</p>
           </div>

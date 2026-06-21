@@ -1,72 +1,45 @@
 import { useState, useEffect, useCallback } from 'react'
 import { socket } from '../socket'
+import { getSessions, endSession } from '../api'
+import { useCursorGlow } from '../hooks'
 
-const API = '/api'
-
-async function _fetch(path, opts = {}) {
-  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts })
-  const json = await res.json()
-  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`)
-  return json
+const REASON_LABEL = {
+  admin_ended:   'ended by admin',
+  admin_revoked: 'revoked by admin',
+  ttl_expired:   'TTL expired',
 }
-
-const getSessions  = ()   => _fetch(`${API}/sessions`)
-const endSession   = (id) => _fetch(`${API}/sessions/${id}/end`, { method: 'POST' })
 
 function ttlLabel(session_expires_at) {
   if (!session_expires_at) return null
-  const exp = new Date(session_expires_at)
-  const diffMs = exp - Date.now()
-  if (diffMs <= 0) return 'Expired'
-  const mins = Math.floor(diffMs / 60000)
-  const secs = Math.floor((diffMs % 60000) / 1000)
+  const diff = new Date(session_expires_at) - Date.now()
+  if (diff <= 0) return 'Expired'
+  const mins = Math.floor(diff / 60000)
+  const secs = Math.floor((diff % 60000) / 1000)
   return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`
 }
 
-function ScopeBadge({ action }) {
-  return (
-    <span style={{
-      display: 'inline-block',
-      padding: '2px 8px',
-      borderRadius: 12,
-      fontSize: 11,
-      fontWeight: 600,
-      background: 'rgba(99,102,241,0.15)',
-      color: '#818cf8',
-      marginRight: 4,
-      marginBottom: 4,
-    }}>
-      {action}
-    </span>
-  )
+function ttlColor(label) {
+  if (!label || label === 'Expired') return 'var(--danger)'
+  if (label.includes('m')) return 'var(--text-muted)'
+  return 'var(--warning)'
 }
 
 function SessionCard({ session, onEnded }) {
   const [ending, setEnding] = useState(false)
-  const [ttl, setTtl] = useState(() => ttlLabel(session.session_expires_at))
-  const [flash, setFlash] = useState(false)
+  const [ttl, setTtl]       = useState(() => ttlLabel(session.session_expires_at))
+  const { ref, handleMouseMove } = useCursorGlow()
 
-  // TTL countdown
   useEffect(() => {
-    const t = setInterval(() => {
-      setTtl(ttlLabel(session.session_expires_at))
-    }, 1000)
+    const t = setInterval(() => setTtl(ttlLabel(session.session_expires_at)), 1000)
     return () => clearInterval(t)
   }, [session.session_expires_at])
-
-  // Flash when session is ended by external event
-  useEffect(() => {
-    setFlash(true)
-    const t = setTimeout(() => setFlash(false), 800)
-    return () => clearTimeout(t)
-  }, [])
 
   async function handleEnd() {
     if (ending) return
     setEnding(true)
     try {
       await endSession(session.id)
-      onEnded(session.id, 'admin_ended')
+      onEnded(session.id)
     } catch (e) {
       console.error('[SessionCard] end error', e)
       setEnding(false)
@@ -74,75 +47,82 @@ function SessionCard({ session, onEnded }) {
   }
 
   return (
-    <div style={{
-      background: flash ? 'rgba(99,102,241,0.08)' : 'rgba(255,255,255,0.03)',
-      border: '1px solid rgba(255,255,255,0.08)',
-      borderRadius: 12,
-      padding: '16px 20px',
-      transition: 'background 0.4s',
-    }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-            <span style={{
-              width: 8, height: 8, borderRadius: '50%',
-              background: '#22c55e', flexShrink: 0,
-              boxShadow: '0 0 6px #22c55e',
-              animation: 'pulse 2s infinite',
-            }} />
-            <span style={{ fontWeight: 700, fontSize: 15 }}>{session.service}</span>
-            <span style={{
-              fontSize: 11, padding: '2px 8px', borderRadius: 8,
-              background: 'rgba(34,197,94,0.15)', color: '#4ade80', fontWeight: 600,
-            }}>LIVE</span>
-          </div>
-          <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', marginBottom: 8 }}>
-            agent: {session.agent_id} · tenant: {session.tenant_id}
-          </div>
-          <div style={{ marginBottom: 8 }}>
-            {(session.scope || []).map(a => <ScopeBadge key={a} action={a} />)}
-          </div>
-          <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)' }}>
-            Token: <code style={{ fontFamily: 'monospace', fontSize: 11 }}>
-              {session.token_id ? session.token_id.slice(0, 14) + '…' : 'n/a'}
-            </code>
-            {ttl && (
-              <span style={{
-                marginLeft: 12,
-                color: ttl === 'Expired' ? '#f87171' : ttl.includes('m') ? 'rgba(255,255,255,0.5)' : '#fbbf24',
-                fontWeight: 600,
-              }}>
-                ⏱ {ttl}
+    <div className="session-card" ref={ref} onMouseMove={handleMouseMove}>
+      <div className="session-card__inner">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            {/* Header row */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 8 }}>
+              <span className="live-dot" />
+              <span style={{ fontWeight: 600, fontSize: 15, letterSpacing: '-0.2px', textTransform: 'capitalize' }}>
+                {session.service}
               </span>
+              <span className="badge badge--success" style={{ fontSize: 10, padding: '1px 7px' }}>LIVE</span>
+            </div>
+
+            {/* Agent / tenant */}
+            <div style={{ fontSize: 11.5, color: 'var(--text-subtle)', fontFamily: 'JetBrains Mono, monospace', marginBottom: 10 }}>
+              agent:{session.agent_id} · tenant:{session.tenant_id?.slice(0, 10)}…
+            </div>
+
+            {/* Scope badges */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 12 }}>
+              {(session.scope || []).map(a => (
+                <span key={a} style={{
+                  display: 'inline-block',
+                  padding: '2px 9px',
+                  borderRadius: 5,
+                  fontSize: 10.5,
+                  fontWeight: 600,
+                  fontFamily: 'JetBrains Mono, monospace',
+                  background: 'rgba(129,140,248,0.1)',
+                  color: '#A5B4FC',
+                  border: '1px solid rgba(129,140,248,0.18)',
+                }}>
+                  {a}
+                </span>
+              ))}
+            </div>
+
+            {/* Token + TTL row */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16, fontSize: 11.5, color: 'var(--text-subtle)' }}>
+              <span>
+                Token:{' '}
+                <code style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11, color: 'var(--text-muted)' }}>
+                  {session.token_id ? session.token_id.slice(0, 14) + '…' : 'n/a'}
+                </code>
+              </span>
+              {ttl && (
+                <span style={{ fontWeight: 700, fontFamily: 'JetBrains Mono, monospace', color: ttlColor(ttl) }}>
+                  ⏱ {ttl}
+                </span>
+              )}
+            </div>
+
+            {/* Task */}
+            {session.task && (
+              <div style={{
+                marginTop: 10,
+                fontSize: 12,
+                color: 'var(--text-muted)',
+                fontStyle: 'italic',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}>
+                "{session.task}"
+              </div>
             )}
           </div>
-          {session.task && (
-            <div style={{
-              marginTop: 8, fontSize: 12, color: 'rgba(255,255,255,0.4)',
-              fontStyle: 'italic', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-            }}>
-              "{session.task}"
-            </div>
-          )}
+
+          <button
+            className="btn btn--end"
+            onClick={handleEnd}
+            disabled={ending}
+          >
+            {ending ? <><span className="spinner" /> Ending…</> : 'End Session'}
+          </button>
         </div>
-        <button
-          onClick={handleEnd}
-          disabled={ending}
-          style={{
-            padding: '7px 14px',
-            borderRadius: 8,
-            border: '1px solid rgba(239,68,68,0.4)',
-            background: ending ? 'rgba(239,68,68,0.05)' : 'rgba(239,68,68,0.12)',
-            color: ending ? 'rgba(239,68,68,0.5)' : '#f87171',
-            fontSize: 12,
-            fontWeight: 600,
-            cursor: ending ? 'not-allowed' : 'pointer',
-            flexShrink: 0,
-            transition: 'all 0.2s',
-          }}
-        >
-          {ending ? 'Ending…' : 'End Session'}
-        </button>
       </div>
     </div>
   )
@@ -154,30 +134,22 @@ function EndedBanner({ event, onDismiss }) {
     return () => clearTimeout(t)
   }, [onDismiss])
 
-  const reasonLabel = {
-    admin_ended:  'ended by admin',
-    admin_revoked: 'revoked by admin',
-    ttl_expired:  'TTL expired',
-  }[event.reason] || event.reason
-
   return (
-    <div style={{
-      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-      padding: '12px 16px',
-      borderRadius: 10,
-      background: 'rgba(239,68,68,0.1)',
-      border: '1px solid rgba(239,68,68,0.3)',
-      animation: 'fadeIn 0.3s ease',
-    }}>
-      <span style={{ color: '#f87171', fontSize: 13, fontWeight: 600 }}>
-        🔴 Session ended — {event.service} · {event.agent_id?.slice(0, 12)}
-        <span style={{ fontWeight: 400, opacity: 0.8 }}> ({reasonLabel})</span>
+    <div className="session-ended-banner">
+      <span style={{ color: 'var(--danger)', fontSize: 13, fontWeight: 600 }}>
+        Session ended —{' '}
+        <span style={{ textTransform: 'capitalize' }}>{event.service}</span>
+        {' '}· agent:{event.agent_id?.slice(0, 12)}
+        <span style={{ fontWeight: 400, opacity: 0.7, marginLeft: 6 }}>
+          ({REASON_LABEL[event.reason] ?? event.reason})
+        </span>
       </span>
       <button
         onClick={onDismiss}
         style={{
-          background: 'none', border: 'none', color: 'rgba(255,255,255,0.4)',
-          cursor: 'pointer', fontSize: 16,
+          background: 'none', border: 'none',
+          color: 'var(--text-subtle)', cursor: 'pointer',
+          fontSize: 18, lineHeight: 1, padding: '0 2px',
         }}
       >×</button>
     </div>
@@ -185,8 +157,8 @@ function EndedBanner({ event, onDismiss }) {
 }
 
 export default function SessionMonitor() {
-  const [sessions, setSessions] = useState([])
-  const [loading, setLoading] = useState(true)
+  const [sessions, setSessions]       = useState([])
+  const [loading, setLoading]         = useState(true)
   const [endedEvents, setEndedEvents] = useState([])
 
   const load = useCallback(async () => {
@@ -206,10 +178,7 @@ export default function SessionMonitor() {
   useEffect(() => {
     function onStarted({ request }) {
       if (!request || request.state !== 'APPROVED' || !request.token_id) return
-      setSessions(prev => {
-        if (prev.find(s => s.id === request.id)) return prev
-        return [request, ...prev]
-      })
+      setSessions(prev => prev.find(s => s.id === request.id) ? prev : [request, ...prev])
     }
 
     function onResolved({ request }) {
@@ -219,11 +188,7 @@ export default function SessionMonitor() {
       } else if (request.token_id) {
         setSessions(prev => {
           const idx = prev.findIndex(s => s.id === request.id)
-          if (idx >= 0) {
-            const next = [...prev]
-            next[idx] = request
-            return next
-          }
+          if (idx >= 0) { const n = [...prev]; n[idx] = request; return n }
           return [request, ...prev]
         })
       }
@@ -231,49 +196,32 @@ export default function SessionMonitor() {
 
     function onEnded(event) {
       setSessions(prev => prev.filter(s => s.id !== event.request_id))
-      const id = Date.now()
-      setEndedEvents(prev => [{ ...event, _id: id }, ...prev].slice(0, 5))
+      setEndedEvents(prev => [{ ...event, _id: Date.now() }, ...prev].slice(0, 5))
     }
 
     function onRevoked({ request_id, state }) {
-      if (state === 'EXPIRED' || state === 'DENIED') {
+      if (state === 'EXPIRED' || state === 'DENIED')
         setSessions(prev => prev.filter(s => s.id !== request_id))
-      }
     }
 
-    socket.on('session:started', onStarted)
-    socket.on('request:resolved', onResolved)
-    socket.on('session:ended', onEnded)
-    socket.on('token:revoked', onRevoked)
+    socket.on('session:started',   onStarted)
+    socket.on('request:resolved',  onResolved)
+    socket.on('session:ended',     onEnded)
+    socket.on('token:revoked',     onRevoked)
     return () => {
-      socket.off('session:started', onStarted)
-      socket.off('request:resolved', onResolved)
-      socket.off('session:ended', onEnded)
-      socket.off('token:revoked', onRevoked)
+      socket.off('session:started',   onStarted)
+      socket.off('request:resolved',  onResolved)
+      socket.off('session:ended',     onEnded)
+      socket.off('token:revoked',     onRevoked)
     }
   }, [])
 
-  function handleEnded(id, reason) {
+  function handleEnded(id) {
     setSessions(prev => prev.filter(s => s.id !== id))
-  }
-
-  function dismissBanner(evtId) {
-    setEndedEvents(prev => prev.filter(e => e._id !== evtId))
   }
 
   return (
     <>
-      <style>{`
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.4; }
-        }
-        @keyframes fadeIn {
-          from { opacity: 0; transform: translateY(-6px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
-      `}</style>
-
       <div className="page-header">
         <div className="page-header__left">
           <h1>Active Sessions</h1>
@@ -282,8 +230,8 @@ export default function SessionMonitor() {
         <div className="page-header__right">
           <span style={{
             fontSize: 13, fontWeight: 700,
-            color: sessions.length ? '#4ade80' : 'rgba(255,255,255,0.3)',
-            marginRight: 8,
+            color: sessions.length ? 'var(--success)' : 'var(--text-subtle)',
+            marginRight: 6,
           }}>
             {sessions.length} active
           </span>
@@ -298,7 +246,7 @@ export default function SessionMonitor() {
               <EndedBanner
                 key={evt._id}
                 event={evt}
-                onDismiss={() => dismissBanner(evt._id)}
+                onDismiss={() => setEndedEvents(prev => prev.filter(e => e._id !== evt._id))}
               />
             ))}
           </div>
@@ -308,12 +256,12 @@ export default function SessionMonitor() {
           <div className="state-loading"><span className="spinner" /> Loading sessions…</div>
         ) : sessions.length === 0 ? (
           <div className="state-empty">
-            <span className="state-empty__icon">🔐</span>
+            <span className="state-empty__icon">◈</span>
             <h3>No active sessions</h3>
             <p>Approve a pending request to start a session. It will appear here live.</p>
           </div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {sessions.map(s => (
               <SessionCard key={s.id} session={s} onEnded={handleEnded} />
             ))}

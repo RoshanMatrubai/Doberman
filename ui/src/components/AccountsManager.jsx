@@ -26,7 +26,9 @@ function TenantSection({ tenant }) {
         <span className="tenant-name">{tenant.name}</span>
         <span className="tenant-id">{tenant.id}</span>
         {accounts !== null && (
-          <span className="badge badge--muted">{accounts.length} account{accounts.length !== 1 ? 's' : ''}</span>
+          <span className="badge badge--muted">
+            {accounts.length} account{accounts.length !== 1 ? 's' : ''}
+          </span>
         )}
       </div>
 
@@ -58,7 +60,7 @@ function TenantSection({ tenant }) {
 
 export default function AccountsManager() {
   const [tenants, setTenants] = useState(null)
-  const [error, setError] = useState(null)
+  const [error, setError]     = useState(null)
 
   useEffect(() => {
     getTenants()
@@ -86,12 +88,9 @@ export default function AccountsManager() {
           <div className="state-loading"><span className="spinner" /> Loading tenants…</div>
         ) : tenants?.length === 0 ? (
           <div className="state-empty">
-            <span className="state-empty__icon">🗄️</span>
+            <span className="state-empty__icon">⊞</span>
             <h3>No tenants yet</h3>
-            <p>
-              Tenants and service accounts are added via the vault API.
-              They'll appear here once created.
-            </p>
+            <p>Tenants and service accounts are added via the vault API. They'll appear here once created.</p>
           </div>
         ) : (
           tenants?.map(t => <TenantSection key={t.id} tenant={t} />)

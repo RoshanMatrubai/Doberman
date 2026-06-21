@@ -5,7 +5,7 @@ import RequestCard from './RequestCard'
 
 export default function PendingQueue({ onCountChange, showToast }) {
   const [requests, setRequests] = useState([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading]   = useState(true)
   const [flashIds, setFlashIds] = useState(new Set())
 
   const load = useCallback(async () => {
@@ -22,33 +22,28 @@ export default function PendingQueue({ onCountChange, showToast }) {
 
   useEffect(() => { load() }, [load])
 
-  // Live: new request arrives → prepend + flash
   useEffect(() => {
     function onNew({ request }) {
-      setRequests(prev => {
-        if (prev.find(r => r.id === request.id)) return prev
-        return [request, ...prev]
-      })
+      setRequests(prev => prev.find(r => r.id === request.id) ? prev : [request, ...prev])
       setFlashIds(prev => new Set([...prev, request.id]))
       setTimeout(() => setFlashIds(prev => { const s = new Set(prev); s.delete(request.id); return s }), 900)
       onCountChange?.(c => c + 1)
-      showToast?.(`New request — ${request.service} · agent:${request.agent_id?.slice(0,10)}`)
+      showToast?.(`New request — ${request.service} · agent:${request.agent_id?.slice(0, 10)}`)
     }
 
-    // Resolved (approved/denied/expired) → remove from pending list
     function onResolved({ request }) {
       if (request.state === 'PENDING') return
       setRequests(prev => prev.filter(r => r.id !== request.id))
       onCountChange?.(c => Math.max(0, c - 1))
     }
 
-    socket.on('request:new', onNew)
+    socket.on('request:new',      onNew)
     socket.on('request:resolved', onResolved)
-    socket.on('token:revoked', onResolved)
+    socket.on('token:revoked',    onResolved)
     return () => {
-      socket.off('request:new', onNew)
+      socket.off('request:new',      onNew)
       socket.off('request:resolved', onResolved)
-      socket.off('token:revoked', onResolved)
+      socket.off('token:revoked',    onResolved)
     }
   }, [onCountChange, showToast])
 
@@ -65,6 +60,11 @@ export default function PendingQueue({ onCountChange, showToast }) {
           <p>Review and approve or deny agent access requests in real time.</p>
         </div>
         <div className="page-header__right">
+          {!loading && requests.length > 0 && (
+            <span style={{ fontSize: 12, color: 'var(--text-subtle)', marginRight: 6 }}>
+              {requests.length} waiting
+            </span>
+          )}
           <button className="icon-btn" onClick={load} title="Refresh">↻</button>
         </div>
       </div>
@@ -74,7 +74,7 @@ export default function PendingQueue({ onCountChange, showToast }) {
           <div className="state-loading"><span className="spinner" /> Loading requests…</div>
         ) : requests.length === 0 ? (
           <div className="state-empty">
-            <span className="state-empty__icon">✅</span>
+            <span className="state-empty__icon">○</span>
             <h3>No pending requests</h3>
             <p>When an agent requests access, the card will appear here live.</p>
           </div>

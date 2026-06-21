@@ -24,16 +24,17 @@ def main():
     args = parser.parse_args()
 
     if args.mcp:
-        import os
+        import os, sys
         script_path = os.path.abspath(__file__)
-        print("GoldenRetriever MCP server — stdio transport", flush=True)
-        print(f"  Connects to agent API at {config.MCP_AGENT_API_URL}", flush=True)
-        print(f"  Tenant: {config.MCP_DEFAULT_TENANT}  Agent: {config.MCP_DEFAULT_AGENT}", flush=True)
-        print("", flush=True)
-        print("Add to your Claude Code MCP config (~/.claude.json → mcpServers):", flush=True)
-        print(f'  {{"golden-retriever": {{"type": "stdio", "command": "python3", "args": ["{script_path}", "--mcp"]}}}}', flush=True)
-        print("", flush=True)
-        print("Starting…", flush=True)
+        # All startup output MUST go to stderr — stdout is the JSON-RPC channel
+        print("GoldenRetriever MCP server — stdio transport", file=sys.stderr, flush=True)
+        print(f"  Connects to agent API at {config.MCP_AGENT_API_URL}", file=sys.stderr, flush=True)
+        print(f"  Tenant: {config.MCP_DEFAULT_TENANT}  Agent: {config.MCP_DEFAULT_AGENT}", file=sys.stderr, flush=True)
+        print("", file=sys.stderr, flush=True)
+        print("Add to your Claude Code MCP config (~/.claude.json → mcpServers):", file=sys.stderr, flush=True)
+        print(f'  {{"golden-retriever": {{"type": "stdio", "command": "python3", "args": ["{script_path}", "--mcp"]}}}}', file=sys.stderr, flush=True)
+        print("", file=sys.stderr, flush=True)
+        print("Starting…", file=sys.stderr, flush=True)
         from agent.mcp_server import run as mcp_run
         mcp_run()
         return

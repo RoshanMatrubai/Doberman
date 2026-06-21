@@ -2,29 +2,33 @@ import { useState, useEffect, useCallback } from 'react'
 import './styles.css'
 import { socket } from './socket'
 import { getStatus } from './api'
-import PendingQueue from './components/PendingQueue'
-import AllRequests from './components/AllRequests'
-import AccountsManager from './components/AccountsManager'
-import AuditFeed from './components/AuditFeed'
-import SessionMonitor from './components/SessionMonitor'
+import DemoControls from './components/DemoControls'
+import PendingTile from './components/PendingTile'
+import SessionsTile from './components/SessionsTile'
+import AuditTile from './components/AuditTile'
+import AccountsTile from './components/AccountsTile'
+import { useCursorGlow } from './hooks'
 
-const NAV = [
-  { id: 'pending',  icon: '🔔', label: 'Pending' },
-  { id: 'sessions', icon: '🔐', label: 'Sessions' },
-  { id: 'all',      icon: '📋', label: 'All Requests' },
-  { id: 'accounts', icon: '🗄️', label: 'Accounts' },
-  { id: 'audit',    icon: '📊', label: 'Audit Log' },
-]
+function Tile({ area, children }) {
+  const { ref, handleMouseMove } = useCursorGlow()
+  return (
+    <div
+      ref={ref}
+      className={`tile tile--${area}`}
+      onMouseMove={handleMouseMove}
+    >
+      {children}
+    </div>
+  )
+}
 
 export default function App() {
-  const [page, setPage] = useState('pending')
-  const [connected, setConnected] = useState(false)
-  const [pendingCount, setPendingCount] = useState(0)
-  const [sessionCount, setSessionCount] = useState(0)
-  const [version, setVersion] = useState(null)
-  const [toast, setToast] = useState(null)
+  const [connected, setConnected]   = useState(false)
+  const [pendingCount, setPending]  = useState(0)
+  const [sessionCount, setSessions] = useState(0)
+  const [version, setVersion]       = useState(null)
+  const [toast, setToast]           = useState(null)
 
-  // Socket connection status
   useEffect(() => {
     const onConnect    = () => setConnected(true)
     const onDisconnect = () => setConnected(false)
@@ -34,91 +38,81 @@ export default function App() {
     return () => { socket.off('connect', onConnect); socket.off('disconnect', onDisconnect) }
   }, [])
 
-  // Initial status fetch + session tracking via SocketIO
   useEffect(() => {
     getStatus()
-      .then(d => {
-        setVersion(d.version)
-        setPendingCount(d.pending_count ?? 0)
-        setSessionCount(d.active_sessions ?? 0)
-      })
+      .then(d => { setVersion(d.version); setPending(d.pending_count ?? 0); setSessions(d.active_sessions ?? 0) })
       .catch(() => {})
   }, [])
 
   useEffect(() => {
-    const onStarted = () => setSessionCount(c => c + 1)
-    const onEnded   = () => setSessionCount(c => Math.max(0, c - 1))
-    socket.on('session:started', onStarted)
-    socket.on('session:ended',   onEnded)
-    return () => {
-      socket.off('session:started', onStarted)
-      socket.off('session:ended',   onEnded)
+    const up   = () => setSessions(c => c + 1)
+    const down = () => setSessions(c => Math.max(0, c - 1))
+    socket.on('session:started', up)
+    socket.on('session:ended',   down)
+    return () => { socket.off('session:started', up); socket.off('session:ended', down) }
+  }, [])
+
+  // Toast for new pending requests
+  useEffect(() => {
+    function onNew({ request }) {
+      setToast(`New request — ${request.service} · agent:${request.agent_id?.slice(0,10)}`)
+      setTimeout(() => setToast(null), 4000)
     }
-  }, [])
-
-  const showToast = useCallback((msg) => {
-    setToast(msg)
-    const t = setTimeout(() => setToast(null), 4500)
-    return () => clearTimeout(t)
-  }, [])
-
-  const handleCountChange = useCallback((val) => {
-    setPendingCount(typeof val === 'function' ? val : () => val)
+    socket.on('request:new', onNew)
+    return () => socket.off('request:new', onNew)
   }, [])
 
   return (
-    <div className="app">
-      {/* ─── Sidebar ─── */}
-      <aside className="sidebar">
-        <div className="sidebar__logo">
-          <span className="sidebar__logo-icon">🐕</span>
-          <span>GoldenRetriever</span>
+    <div className="bento-wrap">
+      {/* ── Header ── */}
+      <header className="bento-header">
+        <div className="bento-header__brand">
+          <span className="bento-header__logo">🐕</span>
+          <div>
+            <span className="bento-header__name">GoldenRetriever</span>
+            <span className="bento-header__sub">Access Broker</span>
+          </div>
         </div>
 
-        <nav className="sidebar__nav">
-          {NAV.map(item => (
-            <button
-              key={item.id}
-              className={`nav-item${page === item.id ? ' nav-item--active' : ''}`}
-              onClick={() => setPage(item.id)}
-            >
-              <span className="nav-icon">{item.icon}</span>
-              <span className="nav-label">{item.label}</span>
-              {item.id === 'pending' && pendingCount > 0 && (
-                <span className="badge badge--warning">{pendingCount}</span>
-              )}
-              {item.id === 'sessions' && sessionCount > 0 && (
-                <span className="badge badge--success">{sessionCount}</span>
-              )}
-            </button>
-          ))}
-        </nav>
+        <DemoControls />
 
-        <div className="sidebar__footer">
+        <div className="bento-header__status">
           <div className={`connection-status connection-status--${connected ? 'live' : 'off'}`}>
-            <span className="connection-status__dot" />
+            <span className="connection-status__dot"/>
             {connected ? 'Live' : 'Connecting…'}
           </div>
-          {version && <div className="sidebar__version">v{version}</div>}
+          {version && <span className="sidebar__version">v{version}</span>}
         </div>
-      </aside>
+      </header>
 
-      {/* ─── Main content ─── */}
-      <main className="main">
-        {page === 'pending' && (
-          <PendingQueue
-            onCountChange={handleCountChange}
-            showToast={showToast}
-          />
-        )}
-        {page === 'sessions' && <SessionMonitor />}
-        {page === 'all'      && <AllRequests />}
-        {page === 'accounts' && <AccountsManager />}
-        {page === 'audit'    && <AuditFeed />}
-      </main>
+      {/* ── Bento grid ── */}
+      <div className="bento-grid">
+        <Tile area="pending">
+          <PendingTile onCountChange={setPending} />
+        </Tile>
 
-      {/* ─── Toast ─── */}
-      {toast && <div className="toast">🔔 {toast}</div>}
+        <Tile area="sessions">
+          <SessionsTile onCountChange={setSessions} />
+        </Tile>
+
+        <Tile area="audit">
+          <AuditTile />
+        </Tile>
+
+        <Tile area="accounts">
+          <AccountsTile />
+        </Tile>
+      </div>
+
+      {/* ── Toast ── */}
+      {toast && (
+        <div className="toast-wrap">
+          <div className="toast">
+            <span className="toast__dot"/>
+            {toast}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

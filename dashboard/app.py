@@ -125,7 +125,9 @@ def create_dashboard_app(queue: RequestQueue, vault: Vault) -> tuple[Flask, Sock
     @app.post("/api/requests/<request_id>/approve")
     def api_approve(request_id: str):
         try:
-            req = _queue.approve(request_id)
+            body = flask_request.get_json(silent=True) or {}
+            scope_override = body.get("scope") or None  # list[str] or None
+            req = _queue.approve(request_id, scope_override=scope_override)
             # Resolve per-service credential hint (OAuth token or session cookies)
             hint_data = adapters.resolve_hint(req.service, req.tenant_id, _vault)
             token_str, token_id = issue_token(req, _vault.get_key(), hint_data=hint_data)
@@ -314,6 +316,79 @@ def create_dashboard_app(queue: RequestQueue, vault: Vault) -> tuple[Flask, Sock
             "account_id": account_id,
             "tenant_id": tenant_id,
         })
+
+    # --- Demo triggers (UI-driven, no terminal needed) ---
+
+    _DEMO_TASKS = {
+        "amazon": "compare prices on these 3 laptops",
+        "google": "search for recent AI research papers",
+        "github": "read the latest open issues",
+        "slack":  "summarize recent messages in #general",
+        "jira":   "list all open high-priority tickets",
+    }
+
+    @app.post("/api/demo/request")
+    def demo_request():
+        """Submit a simulated agent access request from the UI demo controls."""
+        body      = flask_request.get_json(silent=True) or {}
+        service   = body.get("service", "amazon").strip().lower()
+        task      = body.get("task") or _DEMO_TASKS.get(service, "compare prices on 3 items")
+        tenant_id = body.get("tenant_id", "demo-tenant")
+        agent_id  = body.get("agent_id", "demo-agent-001")
+        try:
+            req = _queue.submit(tenant_id, agent_id, service, task)
+        except Exception as exc:
+            print(f"[dashboard] demo/request error: {exc}", flush=True)
+            return jsonify({"error": str(exc)}), 500
+        return jsonify({"request": req.to_dict(), "message": "demo request submitted"}), 201
+
+    @app.post("/api/demo/action")
+    def demo_action():
+        """Simulate an in-scope or out-of-scope agent action against the newest live session."""
+        from policy.engine import is_action_in_scope
+
+        body       = flask_request.get_json(silent=True) or {}
+        action     = body.get("action", "purchase").strip()
+        request_id = body.get("request_id")
+
+        sessions = _queue.list_active_sessions()
+        if not sessions:
+            return jsonify({"error": "No active sessions — approve a request first"}), 404
+
+        # Target a specific session if request_id provided, else most recent
+        if request_id:
+            session = next((s for s in sessions if s.id == request_id), None)
+            if not session:
+                return jsonify({"error": "Session not found"}), 404
+        else:
+            session = sorted(sessions, key=lambda s: s.resolved_at or s.created_at, reverse=True)[0]
+
+        allowed = is_action_in_scope(action, session.scope)
+
+        if allowed:
+            audit_log.log_event(
+                "ACTION_ALLOWED",
+                tenant_id=session.tenant_id, agent_id=session.agent_id,
+                service=session.service, request_id=session.id,
+                scope=session.scope,
+                detail=f"demo: action '{action}' permitted — in scope {session.scope}",
+            )
+        else:
+            audit_log.log_event(
+                audit_log.SCOPE_DENIED,
+                tenant_id=session.tenant_id, agent_id=session.agent_id,
+                service=session.service, request_id=session.id,
+                scope=session.scope,
+                detail=f"demo: action '{action}' blocked — not in scope {session.scope}",
+            )
+
+        return jsonify({
+            "allowed":    allowed,
+            "action":     action,
+            "scope":      session.scope,
+            "service":    session.service,
+            "request_id": session.id,
+        }), 200 if allowed else 403
 
     # --- Root ---
 
