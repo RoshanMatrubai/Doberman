@@ -11,6 +11,10 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "vault.db")
 TOKEN_TTL_SECONDS = 900   # 15 min — never renewable, always re-request
 REQUEST_TTL_SECONDS = 60  # pending request expires if not acted on
 
+# Per-agent rate limiting for access requests
+RATE_LIMIT_REQUESTS = 10   # max requests per agent per window
+RATE_LIMIT_WINDOW_SECONDS = 60  # sliding window duration
+
 # Ed25519 identity key (never commit this file)
 TOKEN_KEY_FILE = os.path.join(os.path.dirname(__file__), ".gr_identity.key")
 
