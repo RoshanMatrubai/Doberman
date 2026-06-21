@@ -34,7 +34,8 @@ npm --prefix ui install && npm --prefix ui run dev   # frontend dev server
 | 10 | Full approval loop — approve→scope→JWT→UI live update→agent poll→revoke; `simulate_agent.py` | ✅ |
 | 11 | Python SDK — `GoldenRetrieverClient`: `request_access`, `verify_token`, `revoke`, `get_session` | ✅ |
 | 12 | MCP server — FastMCP stdio, `request_access` / `list_available_services` / `revoke_token` | ✅ |
-| 13–16 | Audit → OAuth → Session lifecycle → Demo polish | 🔜 |
+| 13 | Audit log — append-only `audit_log` table, event constants, wired to all lifecycle points, live UI feed | ✅ |
+| 14–16 | OAuth → Session lifecycle → Demo polish | 🔜 |
 
 ---
 
@@ -142,12 +143,13 @@ All routes on `:5001`. Agent API lives on `:5002`.
 | DELETE | `/api/requests/<id>` | Revoke an approved/pending request |
 | GET | `/api/tenants` | List tenants |
 | GET | `/api/accounts?tenant_id=<id>` | List service accounts for a tenant |
-| GET | `/api/audit?limit=50` | Audit log (stub until Phase 13) |
+| GET | `/api/audit?limit=50&event=TOKEN_ISSUED&tenant_id=<id>` | Audit log, newest first; optional filters |
 
 **SocketIO events (server → client):**
 - `request:new` — new pending request arrived `{"request": {...}}`
 - `request:resolved` — approved, denied, or expired `{"request": {...}}`
 - `token:revoked` — token explicitly revoked `{"request_id": "...", "state": "..."}`
+- `audit:event` — every lifecycle event `{event, tenant_id, agent_id, service, request_id, scope, detail, timestamp}`
 
 ---
 

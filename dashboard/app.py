@@ -27,8 +27,8 @@ JSON API contract (stable — UI binds to these endpoints):
   GET  /api/accounts?tenant_id=<id>
        → {"accounts":[...]}
 
-  GET  /api/audit?limit=50
-       → {"events":[],"stub":true}  # real data in Phase 13
+  GET  /api/audit?limit=50&event=TOKEN_ISSUED&tenant_id=<id>
+       → {"events":[{id,event,tenant_id,agent_id,service,request_id,scope,detail,timestamp}]}
 
 SocketIO events (server → all clients):
   request:new       {"request": {...}}
@@ -40,6 +40,7 @@ from __future__ import annotations
 from flask import Flask, jsonify, request as flask_request
 from flask_socketio import SocketIO
 
+import audit.log as audit_log
 from agent.queue import InvalidTransition, RequestNotFound, RequestQueue, RequestState
 from core.tokens import issue_token
 from core.vault import Vault
@@ -61,6 +62,7 @@ def create_dashboard_app(queue: RequestQueue, vault: Vault) -> tuple[Flask, Sock
     _queue = queue
     _vault = vault
 
+    audit_log.set_emit_hook(sio.emit)
     queue.set_event_hook(_emit_event)
 
     @app.after_request
@@ -112,6 +114,13 @@ def create_dashboard_app(queue: RequestQueue, vault: Vault) -> tuple[Flask, Sock
             token_str, token_id = issue_token(req, _vault.get_key())
             _queue.attach_token(request_id, token_id, token_jwt=token_str)
             req = _queue.get(request_id)
+            audit_log.log_event(
+                audit_log.TOKEN_ISSUED,
+                tenant_id=req.tenant_id, agent_id=req.agent_id,
+                service=req.service, request_id=request_id,
+                scope=req.scope,
+                detail=f"token {token_id} issued (exp: {req.expires_at.isoformat() if req.expires_at else 'TTL'})",
+            )
         except RequestNotFound:
             return jsonify({"error": "not found"}), 404
         except InvalidTransition as exc:
@@ -163,11 +172,15 @@ def create_dashboard_app(queue: RequestQueue, vault: Vault) -> tuple[Flask, Sock
             return jsonify({"error": "tenant_id is required"}), 400
         return jsonify({"accounts": _vault.list_service_accounts(tenant_id)})
 
-    # --- Audit (stub until Phase 13) ---
+    # --- Audit ---
 
     @app.get("/api/audit")
     def api_audit():
-        return jsonify({"events": [], "stub": True})
+        limit = min(int(flask_request.args.get("limit", 50)), 500)
+        event_filter = flask_request.args.get("event") or None
+        tenant_id = flask_request.args.get("tenant_id") or None
+        events = audit_log.get_recent(limit, event_filter=event_filter, tenant_id=tenant_id)
+        return jsonify({"events": events})
 
     # --- Root ---
 

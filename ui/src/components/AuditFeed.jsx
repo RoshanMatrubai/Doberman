@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { getAudit } from '../api'
+import { socket } from '../socket'
 
 function fmtTime(iso) {
   if (!iso) return '—'
@@ -20,17 +21,23 @@ const EVENT_COLORS = {
 
 export default function AuditFeed() {
   const [events, setEvents] = useState([])
-  const [stub, setStub] = useState(false)
   const [loading, setLoading] = useState(true)
 
+  // Initial load
   useEffect(() => {
     getAudit(100)
-      .then(d => {
-        setEvents(d.events ?? [])
-        setStub(d.stub ?? false)
-      })
+      .then(d => setEvents(d.events ?? []))
       .catch(() => {})
       .finally(() => setLoading(false))
+  }, [])
+
+  // Live updates via SocketIO
+  useEffect(() => {
+    const handler = (ev) => {
+      setEvents(prev => [ev, ...prev].slice(0, 500))
+    }
+    socket.on('audit:event', handler)
+    return () => socket.off('audit:event', handler)
   }, [])
 
   return (
@@ -43,44 +50,26 @@ export default function AuditFeed() {
       </div>
 
       <div className="page-body">
-        {stub && (
-          <div className="audit-stub-banner">
-            ⚠ Audit log is live in Phase 13 — full event persistence wired then.
-          </div>
-        )}
-
         {loading ? (
           <div className="state-loading"><span className="spinner" /> Loading audit log…</div>
         ) : events.length === 0 ? (
           <div className="state-empty">
             <span className="state-empty__icon">📋</span>
             <h3>No audit events yet</h3>
-            <p>
-              Every access grant, denial, scope derivation, and token revocation
-              will be recorded here in Phase 13.
-            </p>
-            <div style={{ marginTop: 20, fontSize: 12, color: 'var(--text-subtle)', textAlign: 'left', lineHeight: 1.8 }}>
-              Planned events:
-              {['SUBMITTED', 'SCOPE_DERIVED', 'APPROVED', 'TOKEN_ISSUED',
-                'SCOPE_DENIED', 'TOKEN_REVOKED', 'SESSION_ENDED'].map(e => (
-                <div key={e} style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
-                  <span style={{ color: EVENT_COLORS[e] ?? 'var(--info)', fontFamily: 'monospace', fontSize: 11, fontWeight: 700 }}>{e}</span>
-                </div>
-              ))}
-            </div>
+            <p>Submit an access request to see the full event trail here.</p>
           </div>
         ) : (
           <div className="card">
             {events.map((ev, i) => (
-              <div key={i} className="audit-row">
+              <div key={ev.id ?? i} className="audit-row">
                 <span className="audit-time">{fmtTime(ev.timestamp ?? ev.created_at)}</span>
                 <span className="audit-event" style={{ color: EVENT_COLORS[ev.event] ?? 'var(--info)' }}>
                   {ev.event}
                 </span>
                 <span className="audit-detail">
-                  {ev.agent_id && <span>agent:{ev.agent_id?.slice(0,10)} · </span>}
+                  {ev.agent_id && <span>agent:{ev.agent_id?.slice(0, 10)} · </span>}
                   {ev.service && <span>{ev.service} · </span>}
-                  {ev.detail ?? ev.message ?? ''}
+                  {ev.detail ?? ''}
                 </span>
               </div>
             ))}

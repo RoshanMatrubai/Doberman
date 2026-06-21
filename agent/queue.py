@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
+import audit.log as audit_log
 import config
 from core.crypto import random_id
 from policy.engine import derive_scope
@@ -137,6 +138,18 @@ class RequestQueue:
             self._requests[req.id] = req
             self._persist(req)
         self._fire("request:new", {"request": req.to_dict()})
+        audit_log.log_event(
+            audit_log.SUBMITTED,
+            tenant_id=req.tenant_id, agent_id=req.agent_id,
+            service=req.service, request_id=req.id,
+        )
+        audit_log.log_event(
+            audit_log.SCOPE_DERIVED,
+            tenant_id=req.tenant_id, agent_id=req.agent_id,
+            service=req.service, request_id=req.id,
+            scope=req.scope,
+            detail=f"derived {len(req.scope)} permission(s): {req.scope}",
+        )
         return req
 
     def approve(self, request_id: str) -> AccessRequest:
@@ -149,6 +162,11 @@ class RequestQueue:
             req.resolved_at = datetime.datetime.now(datetime.UTC)
             self._persist(req)
         self._fire("request:resolved", {"request": req.to_dict()})
+        audit_log.log_event(
+            audit_log.APPROVED,
+            tenant_id=req.tenant_id, agent_id=req.agent_id,
+            service=req.service, request_id=req.id,
+        )
         return req
 
     def deny(self, request_id: str) -> AccessRequest:
@@ -161,6 +179,11 @@ class RequestQueue:
             req.resolved_at = datetime.datetime.now(datetime.UTC)
             self._persist(req)
         self._fire("request:resolved", {"request": req.to_dict()})
+        audit_log.log_event(
+            audit_log.DENIED,
+            tenant_id=req.tenant_id, agent_id=req.agent_id,
+            service=req.service, request_id=req.id,
+        )
         return req
 
     def attach_token(self, request_id: str, token_id: str, token_jwt: str = "") -> AccessRequest:
@@ -193,6 +216,12 @@ class RequestQueue:
             req.resolved_at = datetime.datetime.now(datetime.UTC)
             self._persist(req)
         self._fire("token:revoked", {"request_id": req.id, "state": req.state.value})
+        audit_log.log_event(
+            audit_log.TOKEN_REVOKED,
+            tenant_id=req.tenant_id, agent_id=req.agent_id,
+            service=req.service, request_id=req.id,
+            detail=f"revoked → {req.state.value}",
+        )
         return req
 
     def expire_stale(self) -> list:
@@ -208,6 +237,12 @@ class RequestQueue:
                     expired.append(req)
         for req in expired:
             self._fire("request:resolved", {"request": req.to_dict()})
+            audit_log.log_event(
+                audit_log.EXPIRED,
+                tenant_id=req.tenant_id, agent_id=req.agent_id,
+                service=req.service, request_id=req.id,
+                detail="pending request auto-expired",
+            )
         return [r.id for r in expired]
 
     def get(self, request_id: str) -> Optional[AccessRequest]:
