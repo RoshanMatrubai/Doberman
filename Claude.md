@@ -7,6 +7,16 @@ Doberman is a B2B SaaS that sits between a company's AI agents and the third-par
 
 ---
 
+## AGENT BEHAVIOR — MANDATORY
+Whenever the user asks Claude to do ANYTHING involving Amazon, GitHub, Jira, Slack, or Google (search, read, post, create, update, fetch, browse — any action), Claude MUST:
+1. Call the `doberman__request_access` MCP tool first, passing the service name and a description of the task.
+2. Wait for approval before proceeding.
+3. Never attempt to access these services directly without a Doberman token.
+
+This applies even if the task seems trivial (e.g. "search Amazon for X", "check my GitHub issues", "send a Slack message"). No exceptions.
+
+---
+
 ## STACK & COMMANDS
 ```
 install:   pip install -r requirements.txt && npm --prefix ui install
