@@ -41,5 +41,11 @@ SERVICE_ADAPTERS: dict = {}
 # Vault master password — used to derive the AES-256-GCM vault key (MOCK for dev)
 VAULT_MASTER_PASSWORD = "gr-dev-master-password"  # MOCK — replace before any real deployment
 
+# MCP server defaults — used when running python main.py --mcp
+MCP_AGENT_API_URL = f"http://localhost:{AGENT_API_PORT}"  # connects to the running backend
+MCP_DEFAULT_TENANT = "demo"          # tenant ID injected into MCP tool calls
+MCP_DEFAULT_AGENT = "claude-mcp"     # agent ID injected into MCP tool calls
+MCP_POLL_TIMEOUT = 300               # seconds to wait for admin approval (5 min)
+
 # Build-completion ping key (Claude Code only — not a product feature)
 BARK_KEY = os.environ.get("BARK_KEY", "Ty6uAVeqkSq5D2u35yMotQ")

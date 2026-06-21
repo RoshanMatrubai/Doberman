@@ -33,7 +33,8 @@ npm --prefix ui install && npm --prefix ui run dev   # frontend dev server
 | 9 | Token issuance — Ed25519 JWT, AES-GCM hint, verify/revoke/decrypt, wired to approve+revoke | ✅ |
 | 10 | Full approval loop — approve→scope→JWT→UI live update→agent poll→revoke; `simulate_agent.py` | ✅ |
 | 11 | Python SDK — `GoldenRetrieverClient`: `request_access`, `verify_token`, `revoke`, `get_session` | ✅ |
-| 12–16 | MCP → Audit → OAuth → Session lifecycle → Demo polish | 🔜 |
+| 12 | MCP server — FastMCP stdio, `request_access` / `list_available_services` / `revoke_token` | ✅ |
+| 13–16 | Audit → OAuth → Session lifecycle → Demo polish | 🔜 |
 
 ---
 
@@ -60,6 +61,29 @@ session = client.get_session(token)
 # Revoke when done
 client.revoke(request_id)
 ```
+
+---
+
+## MCP Server (Claude Code integration)
+
+```bash
+# Terminal A — backend + dashboard
+python main.py
+
+# Terminal B — MCP server (stdio)
+python main.py --mcp
+# prints config snippet to paste into ~/.claude.json → mcpServers
+```
+
+The MCP server exposes three tools to the Claude CLI agent:
+
+| Tool | Description |
+|---|---|
+| `request_access(service, task)` | Submit an access request; block until admin approves; return scoped JWT |
+| `list_available_services()` | List services and their action catalogs |
+| `revoke_token(request_id)` | Revoke an approved token or cancel a pending request |
+
+All tools return structured dicts — never raise — so the agent always gets a readable response.
 
 ---
 

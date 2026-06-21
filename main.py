@@ -24,7 +24,18 @@ def main():
     args = parser.parse_args()
 
     if args.mcp:
-        print("GoldenRetriever MCP server starting (stdio)…", flush=True)
+        import os
+        script_path = os.path.abspath(__file__)
+        print("GoldenRetriever MCP server — stdio transport", flush=True)
+        print(f"  Connects to agent API at {config.MCP_AGENT_API_URL}", flush=True)
+        print(f"  Tenant: {config.MCP_DEFAULT_TENANT}  Agent: {config.MCP_DEFAULT_AGENT}", flush=True)
+        print("", flush=True)
+        print("Add to your Claude Code MCP config (~/.claude.json → mcpServers):", flush=True)
+        print(f'  {{"golden-retriever": {{"type": "stdio", "command": "python3", "args": ["{script_path}", "--mcp"]}}}}', flush=True)
+        print("", flush=True)
+        print("Starting…", flush=True)
+        from agent.mcp_server import run as mcp_run
+        mcp_run()
         return
 
     vault = _open_vault()
