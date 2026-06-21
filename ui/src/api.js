@@ -19,3 +19,5 @@ export const revoke          = (id)        => _fetch(`/api/requests/${id}`,     
 export const getTenants      = ()          => _fetch('/api/tenants')
 export const getAccounts     = (tenantId)  => _fetch(`/api/accounts?tenant_id=${tenantId}`)
 export const getAudit        = (limit=50)  => _fetch(`/api/audit?limit=${limit}`)
+export const getSessions     = ()          => _fetch('/api/sessions')
+export const endSession      = (id)        => _fetch(`/api/sessions/${id}/end`, { method: 'POST' })

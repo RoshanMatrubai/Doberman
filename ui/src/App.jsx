@@ -6,9 +6,11 @@ import PendingQueue from './components/PendingQueue'
 import AllRequests from './components/AllRequests'
 import AccountsManager from './components/AccountsManager'
 import AuditFeed from './components/AuditFeed'
+import SessionMonitor from './components/SessionMonitor'
 
 const NAV = [
   { id: 'pending',  icon: '🔔', label: 'Pending' },
+  { id: 'sessions', icon: '🔐', label: 'Sessions' },
   { id: 'all',      icon: '📋', label: 'All Requests' },
   { id: 'accounts', icon: '🗄️', label: 'Accounts' },
   { id: 'audit',    icon: '📊', label: 'Audit Log' },
@@ -18,6 +20,7 @@ export default function App() {
   const [page, setPage] = useState('pending')
   const [connected, setConnected] = useState(false)
   const [pendingCount, setPendingCount] = useState(0)
+  const [sessionCount, setSessionCount] = useState(0)
   const [version, setVersion] = useState(null)
   const [toast, setToast] = useState(null)
 
@@ -31,11 +34,26 @@ export default function App() {
     return () => { socket.off('connect', onConnect); socket.off('disconnect', onDisconnect) }
   }, [])
 
-  // Initial status fetch
+  // Initial status fetch + session tracking via SocketIO
   useEffect(() => {
     getStatus()
-      .then(d => { setVersion(d.version); setPendingCount(d.pending_count ?? 0) })
+      .then(d => {
+        setVersion(d.version)
+        setPendingCount(d.pending_count ?? 0)
+        setSessionCount(d.active_sessions ?? 0)
+      })
       .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    const onStarted = () => setSessionCount(c => c + 1)
+    const onEnded   = () => setSessionCount(c => Math.max(0, c - 1))
+    socket.on('session:started', onStarted)
+    socket.on('session:ended',   onEnded)
+    return () => {
+      socket.off('session:started', onStarted)
+      socket.off('session:ended',   onEnded)
+    }
   }, [])
 
   const showToast = useCallback((msg) => {
@@ -69,6 +87,9 @@ export default function App() {
               {item.id === 'pending' && pendingCount > 0 && (
                 <span className="badge badge--warning">{pendingCount}</span>
               )}
+              {item.id === 'sessions' && sessionCount > 0 && (
+                <span className="badge badge--success">{sessionCount}</span>
+              )}
             </button>
           ))}
         </nav>
@@ -90,6 +111,7 @@ export default function App() {
             showToast={showToast}
           />
         )}
+        {page === 'sessions' && <SessionMonitor />}
         {page === 'all'      && <AllRequests />}
         {page === 'accounts' && <AccountsManager />}
         {page === 'audit'    && <AuditFeed />}

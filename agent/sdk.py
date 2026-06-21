@@ -181,47 +181,107 @@ class GoldenRetrieverClient:
             )
         print(f"[sdk] revoked {request_id[:8]}…", flush=True)
 
-    def get_session(self, token: str) -> requests.Session:
+    def get_session(self, token: str, request_id: str | None = None) -> requests.Session:
         """
         Build an authenticated requests.Session from a scoped token.
 
-        The returned session carries:
-          - Authorization: Bearer <token>   (verified by GoldenRetriever on each call)
-          - X-GR-Scope:    comma-joined scope list
-          - X-GR-Service:  service name from the token claims
+        Fetches the one-time hint from /agent/hint/<request_id>, then injects
+        the real credential:
+          - OAuth hint  → Authorization: Bearer <access_token>
+          - Session hint → Cookie jar populated from encrypted cookie list
+          - Stub / error → Authorization: Bearer <gr_jwt> (fallback)
 
-        OAuth Bearer / headless cookie injection is wired in Phase 14.
-        For now, the JWT itself is the credential presented to downstream calls.
+        Always adds:
+          - X-GR-Token:  the GR JWT (proof of grant)
+          - X-GR-Scope:  comma-joined scope list
+          - X-GR-Service: service name
         """
-        # Decode claims (display only — sig already verified by caller via verify_token)
         claims = pyjwt.decode(token, options={"verify_signature": False})
         scope = claims.get("scope", [])
         service = claims.get("service", "")
-        hint_type = _hint_type(claims)
+        rid = request_id or claims.get("request_id", "")
 
         session = requests.Session()
-        session.headers["Authorization"] = f"Bearer {token}"
+        session.headers["X-GR-Token"] = token
         session.headers["X-GR-Scope"] = ",".join(scope)
         session.headers["X-GR-Service"] = service
 
-        if hint_type == "oauth":
-            # Phase 14 will populate a real OAuth Bearer via auth/oauth.py;
-            # for now the GR JWT itself is forwarded as proof of grant.
+        hint = None
+        if rid:
+            try:
+                resp = requests.get(
+                    f"{self.base_url}/agent/hint/{rid}",
+                    timeout=10,
+                )
+                if resp.status_code == 200:
+                    hint = resp.json().get("hint", {})
+                    print(
+                        f"[sdk] hint fetched for {rid[:8]}… "
+                        f"type={hint.get('type','?')} service={service!r}",
+                        flush=True,
+                    )
+                elif resp.status_code == 410:
+                    print(
+                        f"[sdk] hint already consumed for {rid[:8]}… "
+                        f"— using GR JWT as credential",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"[sdk] hint fetch failed {resp.status_code} for {rid[:8]}…",
+                        flush=True,
+                    )
+            except Exception as exc:
+                print(f"[sdk] hint fetch error: {exc}", flush=True)
+
+        if hint and hint.get("type") == "oauth":
+            access_token = hint.get("access_token", "")
+            token_type = hint.get("token_type", "Bearer")
+            session.headers["Authorization"] = f"{token_type} {access_token}"
+            print(f"[sdk] get_session: injected OAuth bearer for {service!r}", flush=True)
+        elif hint and hint.get("type") == "session":
+            cookies = hint.get("cookies", [])
+            for c in cookies:
+                session.cookies.set(
+                    c["name"], c["value"],
+                    domain=c.get("domain", ""),
+                    path=c.get("path", "/"),
+                )
             print(
-                f"[sdk] get_session: oauth hint detected for {service!r} "
-                f"(full token injection in Phase 14)",
+                f"[sdk] get_session: injected {len(cookies)} cookie(s) for {service!r}",
                 flush=True,
             )
-        elif hint_type == "session":
-            # Phase 14 will inject decrypted cookies from auth/session.py;
-            # cookie jar is a stub here.
+        else:
+            # Fallback: present the GR JWT itself as the Bearer credential
+            session.headers["Authorization"] = f"Bearer {token}"
             print(
-                f"[sdk] get_session: session/cookie hint detected for {service!r} "
-                f"(cookie injection in Phase 14)",
+                f"[sdk] get_session: fallback — GR JWT as Bearer for {service!r}",
                 flush=True,
             )
 
         return session
+
+    def check_action(self, token: str, action: str, data: dict | None = None) -> bool:
+        """
+        Check whether an action is in scope via the /agent/action endpoint.
+
+        Returns True if allowed; raises ScopeViolation if blocked (403).
+        Raises ValueError on token/auth errors.
+        """
+        resp = requests.post(
+            f"{self.base_url}/agent/action",
+            json={"token": token, "action": action, "data": data or {}},
+            timeout=10,
+        )
+        body = resp.json()
+        if resp.status_code == 200:
+            return True
+        if resp.status_code == 403:
+            raise ScopeViolation(
+                f"Action '{action}' blocked — not in granted scope. "
+                f"Server: {body.get('error', '')}"
+            )
+        raise ValueError(f"[sdk] action check failed {resp.status_code}: {body}")
 
     # -------------------------------------------------------------------------
     # Internal helpers
@@ -245,11 +305,3 @@ class GoldenRetrieverClient:
         return self._pubkey_cache
 
 
-def _hint_type(claims: dict) -> str:
-    """Extract the hint type from decoded (unverified) JWT claims; returns 'stub' if absent."""
-    hint_b64 = claims.get("hint", "")
-    if not hint_b64:
-        return "stub"
-    # The hint payload is AES-GCM encrypted — we can't decrypt it without the master secret.
-    # The type can only be inferred from context; leave it as 'stub' for SDK-side display.
-    return "stub"  # Phase 14 will supply decrypted type via decrypt_hint()

@@ -36,14 +36,15 @@ npm --prefix ui install && npm --prefix ui run dev   # frontend dev server
 | 12 | MCP server — FastMCP stdio, `request_access` / `list_available_services` / `revoke_token` | ✅ |
 | 13 | Audit log — append-only `audit_log` table, event constants, wired to all lifecycle points, live UI feed | ✅ |
 | 14 | OAuth + headless auth — Google/GitHub OAuth flow, Playwright session login, per-service adapters, hint wired into approve | ✅ |
-| 15–16 | Session lifecycle → Demo polish | 🔜 |
+| 15 | Session lifecycle — session bind, `GET /agent/hint/<id>` one-time fetch, real `get_session()`, UI Sessions tab, auto-expiry, `POST /agent/action` scope enforcement | ✅ |
+| 16 | Demo polish | 🔜 |
 
 ---
 
 ## Python SDK
 
 ```python
-from agent.sdk import GoldenRetrieverClient, ApprovalDenied, ApprovalExpired, ApprovalTimeout
+from agent.sdk import GoldenRetrieverClient, ApprovalDenied, ApprovalExpired, ApprovalTimeout, ScopeViolation
 
 client = GoldenRetrieverClient(
     base_url="http://localhost:5002",
@@ -57,8 +58,15 @@ token, request_id = client.request_access("amazon", "compare prices on 3 items")
 # Verify signature + expiry using the server's Ed25519 public key (cached)
 claims = client.verify_token(token, required_scope=["search"])
 
-# Build an authenticated requests.Session (Bearer JWT header + X-GR-Scope)
-session = client.get_session(token)
+# Build an authenticated requests.Session with real credentials injected from the
+# one-time hint (OAuth Bearer or cookie jar from headless session)
+session = client.get_session(token, request_id=request_id)
+
+# Check if an action is in scope (logs SCOPE_DENIED audit event on 403)
+try:
+    client.check_action(token, "purchase")
+except ScopeViolation as exc:
+    print("Blocked:", exc)
 
 # Revoke when done
 client.revoke(request_id)
@@ -109,9 +117,11 @@ All tools return structured dicts — never raise — so the agent always gets a
 - Agents receive a **signed JWT** — never raw passwords, master vault keys, or OAuth secrets.
 - The JWT `hint` is an AES-GCM blob decryptable only by the issuing server.
 - Per-hint key = `HMAC(master_secret, request_id)` — derived at issue, never stored.
-- Agents fetch the hint **once** via `GET /agent/hint/{id}` (consumed on first read).
+- Agents fetch the hint **once** via `GET /agent/hint/{id}` (consumed on first read; 410 on replay).
+- Tokens are bound to a session; they auto-expire when `session_expires_at` is reached (background loop) or when the admin ends the session.
 - Tokens expire at session end or TTL, whichever first — never renewable.
 - Revocation checked on every use.
+- Out-of-scope actions return 403 and log a `SCOPE_DENIED` audit event.
 
 ---
 
@@ -147,13 +157,28 @@ All routes on `:5001`. Agent API lives on `:5002`.
 | GET | `/api/tenants` | List tenants |
 | GET | `/api/accounts?tenant_id=<id>` | List service accounts for a tenant |
 | GET | `/api/audit?limit=50&event=TOKEN_ISSUED&tenant_id=<id>` | Audit log, newest first; optional filters |
+| GET | `/api/sessions` | List active sessions (APPROVED requests with live tokens) |
+| POST | `/api/sessions/<id>/end` | End a live session — revokes token, logs `SESSION_ENDED` |
 | GET | `/auth/oauth/<service>/begin?tenant_id=<id>` | Start OAuth flow — redirects to provider consent screen |
 | GET | `/auth/callback` | OAuth callback — exchanges code, stores encrypted tokens in vault |
+
+**Agent API (`:5002`):**
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/agent/request` | Submit scoped access request |
+| GET | `/agent/token/<id>` | Poll status (202/200/403/410) |
+| DELETE | `/agent/token/<id>` | Cancel/revoke |
+| GET | `/agent/pubkey` | Ed25519 public key |
+| GET | `/agent/hint/<id>` | One-time credential hint (410 on replay) |
+| POST | `/agent/action` | Scope enforcement check — 200/403 + `SCOPE_DENIED` audit |
 
 **SocketIO events (server → client):**
 - `request:new` — new pending request arrived `{"request": {...}}`
 - `request:resolved` — approved, denied, or expired `{"request": {...}}`
 - `token:revoked` — token explicitly revoked `{"request_id": "...", "state": "..."}`
+- `session:started` — token issued for an approved request `{"request": {...}}`
+- `session:ended` — session ended (TTL/admin/revoke) `{"request_id":"...","service":"...","agent_id":"...","reason":"..."}`
 - `audit:event` — every lifecycle event `{event, tenant_id, agent_id, service, request_id, scope, detail, timestamp}`
 
 ---
@@ -165,12 +190,13 @@ A: python main.py               # backend :5001/:5002
 B: npm --prefix ui run dev      # UI
 C: python simulate_agent.py     # agent smoke test (waits for admin to approve)
 
-1. simulate_agent.py submits Amazon "compare prices" request → scope=[search,read], NO purchase
-2. Pending card appears live in the UI
-3. Admin clicks Approve on the dashboard
-4. simulate_agent.py receives scoped JWT, prints claims + scope matrix
-5. In-scope: search → 200 OK  |  Out-of-scope: purchase → 403 BLOCKED
-6. Token revoked → subsequent poll → 410 EXPIRED
+1. simulate_agent.py submits Amazon "compare prices" → scope=[search,read], NO purchase
+2. Pending card appears live in the UI (Pending tab)
+3. Admin clicks Approve → Sessions tab shows new live session with scope + TTL countdown
+4. simulate_agent.py receives scoped JWT; fetches one-time hint → hint consumed (410 on replay)
+5. In-scope: search → 200 OK  |  Out-of-scope: purchase → 403 + SCOPE_DENIED in audit feed
+6. Admin clicks "End Session" → red banner in Sessions tab, SESSION_ENDED in audit
+7. Subsequent token poll → 410 EXPIRED ✓
 ```
 
 ---

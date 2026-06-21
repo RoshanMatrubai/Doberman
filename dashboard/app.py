@@ -30,18 +30,29 @@ JSON API contract (stable — UI binds to these endpoints):
   GET  /api/audit?limit=50&event=TOKEN_ISSUED&tenant_id=<id>
        → {"events":[{id,event,tenant_id,agent_id,service,request_id,scope,detail,timestamp}]}
 
+  GET  /api/sessions
+       → {"sessions":[...AccessRequest dicts for APPROVED+token_id...]}
+
+  POST /api/sessions/<id>/end
+       → {"message":"session ended","request_id":"<id>"}
+
 SocketIO events (server → all clients):
   request:new       {"request": {...}}
   request:resolved  {"request": {...}}
   token:revoked     {"request_id": "...", "state": "..."}
+  session:started   {"request": {...}}
+  session:ended     {"request_id":"...","service":"...","agent_id":"...","reason":"..."}
 """
 from __future__ import annotations
 
 from flask import Flask, jsonify, redirect, request as flask_request
 from flask_socketio import SocketIO
 
+import datetime
+
 import audit.log as audit_log
 import auth.adapters as adapters
+import config
 from agent.queue import InvalidTransition, RequestNotFound, RequestQueue, RequestState
 from auth.oauth import OAuthError, begin_oauth, complete_oauth
 from core.tokens import issue_token
@@ -86,7 +97,8 @@ def create_dashboard_app(queue: RequestQueue, vault: Vault) -> tuple[Flask, Sock
         return jsonify({
             "status": "ok",
             "pending_count": len(_queue.list_pending()),
-            "version": "0.9.0",
+            "active_sessions": len(_queue.list_active_sessions()),
+            "version": "0.15.0",
         })
 
     # --- Requests ---
@@ -117,7 +129,14 @@ def create_dashboard_app(queue: RequestQueue, vault: Vault) -> tuple[Flask, Sock
             # Resolve per-service credential hint (OAuth token or session cookies)
             hint_data = adapters.resolve_hint(req.service, req.tenant_id, _vault)
             token_str, token_id = issue_token(req, _vault.get_key(), hint_data=hint_data)
-            _queue.attach_token(request_id, token_id, token_jwt=token_str)
+            session_expires_at = datetime.datetime.now(datetime.UTC) + datetime.timedelta(
+                seconds=config.TOKEN_TTL_SECONDS
+            )
+            _queue.attach_token(
+                request_id, token_id,
+                token_jwt=token_str,
+                session_expires_at=session_expires_at,
+            )
             req = _queue.get(request_id)
             audit_log.log_event(
                 audit_log.TOKEN_ISSUED,
@@ -127,7 +146,7 @@ def create_dashboard_app(queue: RequestQueue, vault: Vault) -> tuple[Flask, Sock
                 detail=(
                     f"token {token_id} issued "
                     f"(hint_type={hint_data.get('type','?')}, "
-                    f"exp: {req.expires_at.isoformat() if req.expires_at else 'TTL'})"
+                    f"exp: {session_expires_at.isoformat()})"
                 ),
             )
         except RequestNotFound:
@@ -156,9 +175,24 @@ def create_dashboard_app(queue: RequestQueue, vault: Vault) -> tuple[Flask, Sock
     def api_revoke(request_id: str):
         try:
             req_before = _queue.get(request_id)
+            was_session = req_before and req_before.state == RequestState.APPROVED and req_before.token_id
             req = _queue.revoke(request_id)
             if req_before and req_before.token_id:
                 _vault.revoke_token(req_before.token_id, req_before.tenant_id)
+            if was_session:
+                audit_log.log_event(
+                    audit_log.SESSION_ENDED,
+                    tenant_id=req_before.tenant_id, agent_id=req_before.agent_id,
+                    service=req_before.service, request_id=request_id,
+                    detail="session ended by admin revoke",
+                )
+                if _socketio:
+                    _socketio.emit("session:ended", {
+                        "request_id": request_id,
+                        "service": req_before.service,
+                        "agent_id": req_before.agent_id,
+                        "reason": "admin_revoked",
+                    })
         except RequestNotFound:
             return jsonify({"error": "not found"}), 404
         except InvalidTransition as exc:
@@ -167,6 +201,46 @@ def create_dashboard_app(queue: RequestQueue, vault: Vault) -> tuple[Flask, Sock
             print(f"[dashboard] revoke error: {exc}", flush=True)
             return jsonify({"error": "internal error"}), 500
         return jsonify({"message": "revoked", "request_id": request_id})
+
+    # --- Sessions ---
+
+    @app.get("/api/sessions")
+    def api_sessions():
+        """List active sessions (APPROVED requests with a live token)."""
+        sessions = _queue.list_active_sessions()
+        return jsonify({"sessions": [s.to_dict() for s in sessions]})
+
+    @app.post("/api/sessions/<request_id>/end")
+    def api_end_session(request_id: str):
+        """Explicitly end a live session — revokes token and emits session:ended."""
+        try:
+            req_before = _queue.get(request_id)
+            if not req_before:
+                return jsonify({"error": "not found"}), 404
+            if req_before.state != RequestState.APPROVED:
+                return jsonify({"error": f"Session not active (state: {req_before.state.value})"}), 409
+            req = _queue.revoke(request_id)
+            if req_before.token_id:
+                _vault.revoke_token(req_before.token_id, req_before.tenant_id)
+            audit_log.log_event(
+                audit_log.SESSION_ENDED,
+                tenant_id=req_before.tenant_id, agent_id=req_before.agent_id,
+                service=req_before.service, request_id=request_id,
+                detail="session ended by admin",
+            )
+            if _socketio:
+                _socketio.emit("session:ended", {
+                    "request_id": request_id,
+                    "service": req_before.service,
+                    "agent_id": req_before.agent_id,
+                    "reason": "admin_ended",
+                })
+        except (RequestNotFound, InvalidTransition) as exc:
+            return jsonify({"error": str(exc)}), 409
+        except Exception as exc:
+            print(f"[dashboard] end_session error: {exc}", flush=True)
+            return jsonify({"error": "internal error"}), 500
+        return jsonify({"message": "session ended", "request_id": request_id})
 
     # --- Tenants & Accounts ---
 
@@ -245,7 +319,7 @@ def create_dashboard_app(queue: RequestQueue, vault: Vault) -> tuple[Flask, Sock
 
     @app.get("/")
     def root():
-        return jsonify({"service": "GoldenRetriever", "version": "0.9.0", "status": "ok"})
+        return jsonify({"service": "GoldenRetriever", "version": "0.15.0", "status": "ok"})
 
     return app, sio
 

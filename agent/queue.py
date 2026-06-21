@@ -53,6 +53,8 @@ class AccessRequest:
     resolved_at: Optional[datetime.datetime] = None
     token_id: Optional[str] = None
     token_jwt: Optional[str] = None
+    session_expires_at: Optional[datetime.datetime] = None  # set when token is issued
+    hint_consumed: bool = False  # True once the one-time hint has been fetched
 
     def is_pending(self) -> bool:
         return self.state == RequestState.PENDING
@@ -71,6 +73,8 @@ class AccessRequest:
             "resolved_at": self.resolved_at.isoformat() if self.resolved_at else None,
             "token_id": self.token_id,
             "token_jwt": self.token_jwt,
+            "session_expires_at": self.session_expires_at.isoformat() if self.session_expires_at else None,
+            "hint_consumed": self.hint_consumed,
         }
 
 
@@ -186,7 +190,13 @@ class RequestQueue:
         )
         return req
 
-    def attach_token(self, request_id: str, token_id: str, token_jwt: str = "") -> AccessRequest:
+    def attach_token(
+        self,
+        request_id: str,
+        token_id: str,
+        token_jwt: str = "",
+        session_expires_at: datetime.datetime | None = None,
+    ) -> AccessRequest:
         """Record the issued token ID and JWT on an APPROVED request."""
         with self._lock:
             req = self._get_or_raise(request_id)
@@ -196,10 +206,28 @@ class RequestQueue:
                 )
             req.token_id = token_id
             req.token_jwt = token_jwt
+            req.session_expires_at = session_expires_at
             self._persist(req)
         # Fire a second resolved event so live UI clients see the token_id appear
         self._fire("request:resolved", {"request": req.to_dict()})
+        self._fire("session:started", {"request": req.to_dict()})
         return req
+
+    def mark_hint_consumed(self, request_id: str) -> AccessRequest:
+        """Mark the one-time hint for this request as consumed."""
+        with self._lock:
+            req = self._get_or_raise(request_id)
+            req.hint_consumed = True
+            self._persist(req)
+        return req
+
+    def list_active_sessions(self) -> list:
+        """Return all APPROVED requests with a live token (active sessions)."""
+        with self._lock:
+            return [
+                r for r in self._requests.values()
+                if r.state == RequestState.APPROVED and r.token_id
+            ]
 
     def revoke(self, request_id: str) -> AccessRequest:
         """Cancel (PENDING→DENIED) or expire (APPROVED→EXPIRED) a request."""
@@ -225,17 +253,27 @@ class RequestQueue:
         return req
 
     def expire_stale(self) -> list:
-        """Expire all PENDING requests past their TTL. Returns list of expired IDs."""
+        """Expire all PENDING requests past their TTL and active sessions past session TTL."""
         now = datetime.datetime.now(datetime.UTC)
-        expired = []
+        expired_pending = []
+        expired_sessions = []
         with self._lock:
             for req in list(self._requests.values()):
                 if req.state == RequestState.PENDING and now >= req.expires_at:
                     req.state = RequestState.EXPIRED
                     req.resolved_at = now
                     self._persist(req)
-                    expired.append(req)
-        for req in expired:
+                    expired_pending.append(req)
+                elif (
+                    req.state == RequestState.APPROVED
+                    and req.session_expires_at
+                    and now >= req.session_expires_at
+                ):
+                    req.state = RequestState.EXPIRED
+                    req.resolved_at = now
+                    self._persist(req)
+                    expired_sessions.append(req)
+        for req in expired_pending:
             self._fire("request:resolved", {"request": req.to_dict()})
             audit_log.log_event(
                 audit_log.EXPIRED,
@@ -243,7 +281,21 @@ class RequestQueue:
                 service=req.service, request_id=req.id,
                 detail="pending request auto-expired",
             )
-        return [r.id for r in expired]
+        for req in expired_sessions:
+            self._fire("session:ended", {
+                "request_id": req.id,
+                "service": req.service,
+                "agent_id": req.agent_id,
+                "reason": "ttl_expired",
+            })
+            self._fire("request:resolved", {"request": req.to_dict()})
+            audit_log.log_event(
+                audit_log.SESSION_ENDED,
+                tenant_id=req.tenant_id, agent_id=req.agent_id,
+                service=req.service, request_id=req.id,
+                detail="session auto-expired (token TTL reached)",
+            )
+        return [r.id for r in expired_pending + expired_sessions]
 
     def get(self, request_id: str) -> Optional[AccessRequest]:
         """Fetch by ID — checks memory first, then SQLite."""
@@ -296,14 +348,21 @@ class RequestQueue:
                 expires_at TEXT NOT NULL,
                 resolved_at TEXT,
                 token_id TEXT,
-                token_jwt TEXT
+                token_jwt TEXT,
+                session_expires_at TEXT,
+                hint_consumed INTEGER NOT NULL DEFAULT 0
             )
         """)
-        # Migrate existing DBs that predate the token_jwt column
-        try:
-            self._conn.execute("ALTER TABLE requests ADD COLUMN token_jwt TEXT")
-        except Exception:
-            pass
+        # Migrate existing DBs — add columns if missing
+        for col, defn in [
+            ("token_jwt",          "TEXT"),
+            ("session_expires_at", "TEXT"),
+            ("hint_consumed",      "INTEGER NOT NULL DEFAULT 0"),
+        ]:
+            try:
+                self._conn.execute(f"ALTER TABLE requests ADD COLUMN {col} {defn}")
+            except Exception:
+                pass
         self._conn.commit()
 
     def _load_pending(self):
@@ -320,8 +379,9 @@ class RequestQueue:
             """
             INSERT OR REPLACE INTO requests
               (id, tenant_id, agent_id, service, task, scope, state,
-               created_at, expires_at, resolved_at, token_id, token_jwt)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               created_at, expires_at, resolved_at, token_id, token_jwt,
+               session_expires_at, hint_consumed)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 req.id, req.tenant_id, req.agent_id, req.service, req.task,
@@ -330,6 +390,8 @@ class RequestQueue:
                 req.resolved_at.isoformat() if req.resolved_at else None,
                 req.token_id,
                 req.token_jwt,
+                req.session_expires_at.isoformat() if req.session_expires_at else None,
+                1 if req.hint_consumed else 0,
             ),
         )
         self._conn.commit()
@@ -368,6 +430,7 @@ class RequestQueue:
 # --- helpers ---
 
 def _row_to_request(row: sqlite3.Row) -> AccessRequest:
+    keys = row.keys()
     return AccessRequest(
         id=row["id"],
         tenant_id=row["tenant_id"],
@@ -383,5 +446,10 @@ def _row_to_request(row: sqlite3.Row) -> AccessRequest:
             if row["resolved_at"] else None
         ),
         token_id=row["token_id"],
-        token_jwt=row["token_jwt"],
+        token_jwt=row["token_jwt"] if "token_jwt" in keys else None,
+        session_expires_at=(
+            datetime.datetime.fromisoformat(row["session_expires_at"])
+            if "session_expires_at" in keys and row["session_expires_at"] else None
+        ),
+        hint_consumed=bool(row["hint_consumed"]) if "hint_consumed" in keys else False,
     )

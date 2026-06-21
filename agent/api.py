@@ -1,10 +1,12 @@
 """
 Agent-facing REST API — Blueprint mounted at /agent.
 
-POST   /agent/request        submit a new scoped access request
-GET    /agent/token/<id>     poll status (202 pending · 200 approved · 403 denied · 410 expired)
-DELETE /agent/token/<id>     cancel (PENDING) or revoke (APPROVED)
-GET    /agent/pubkey         GoldenRetriever's Ed25519 public key (base64)
+POST   /agent/request          submit a new scoped access request
+GET    /agent/token/<id>       poll status (202 pending · 200 approved · 403 denied · 410 expired)
+DELETE /agent/token/<id>       cancel (PENDING) or revoke (APPROVED)
+GET    /agent/pubkey           GoldenRetriever's Ed25519 public key (base64)
+GET    /agent/hint/<id>        one-time credential hint fetch (410 if already consumed)
+POST   /agent/action           scope enforcement check — returns 200/403 + logs SCOPE_DENIED
 """
 from __future__ import annotations
 
@@ -12,13 +14,15 @@ import base64
 
 from flask import Blueprint, Flask, jsonify, request
 
+import audit.log as audit_log
 import config
 from agent.queue import (
     InvalidTransition, RateLimitExceeded, RequestNotFound,
     RequestQueue, RequestState,
 )
-from core.tokens import get_public_key_bytes
+from core.tokens import decrypt_hint, get_public_key_bytes, verify_token
 from core.vault import Vault
+from policy.engine import is_action_in_scope
 
 agent_bp = Blueprint("agent", __name__, url_prefix="/agent")
 
@@ -129,6 +133,89 @@ def get_pubkey():
         print(f"[agent-api] pubkey error: {exc}", flush=True)
         return jsonify({"error": "could not load public key"}), 500
     return jsonify({"algorithm": "EdDSA", "public_key": base64.b64encode(pub).decode()}), 200
+
+
+@agent_bp.get("/hint/<request_id>")
+def get_hint(request_id: str):
+    """
+    One-time hint fetch — decrypts and returns the credential hint embedded in the token.
+    Returns 410 if already consumed or request not found/approved.
+    """
+    if _vault is None:
+        return jsonify({"error": "vault not initialized"}), 500
+
+    req = _get_queue().get(request_id)
+    if req is None:
+        return jsonify({"error": "not found"}), 404
+    if req.state != RequestState.APPROVED or not req.token_jwt:
+        return jsonify({"error": "token not available"}), 410
+    if req.hint_consumed:
+        return jsonify({"error": "hint already consumed"}), 410
+
+    try:
+        hint = decrypt_hint(req.token_jwt, request_id, _vault.get_key())
+        _get_queue().mark_hint_consumed(request_id)
+        print(f"[agent-api] hint fetched (one-time) for request {request_id[:8]}…", flush=True)
+    except Exception as exc:
+        print(f"[agent-api] hint decrypt error: {exc}", flush=True)
+        return jsonify({"error": "could not decrypt hint"}), 500
+
+    return jsonify({"hint": hint, "request_id": request_id}), 200
+
+
+@agent_bp.post("/action")
+def check_action():
+    """
+    Scope enforcement check — verify the token and check if the action is in scope.
+
+    Body: {"token": "<jwt>", "action": "purchase", "data": {...}}
+    Returns 200 if in scope; 403 with SCOPE_DENIED audit event if not.
+    """
+    if _vault is None:
+        return jsonify({"error": "vault not initialized"}), 500
+
+    body = request.get_json(silent=True) or {}
+    token = body.get("token", "").strip()
+    action = body.get("action", "").strip()
+    data = body.get("data", {})
+
+    if not token or not action:
+        return jsonify({"error": "token and action are required"}), 400
+
+    try:
+        claims = verify_token(token, _vault)
+    except ValueError as exc:
+        return jsonify({"error": str(exc), "allowed": False}), 401
+
+    scope = claims.get("scope", [])
+    allowed = is_action_in_scope(action, scope)
+
+    if allowed:
+        return jsonify({
+            "allowed": True,
+            "action": action,
+            "scope": scope,
+        }), 200
+    else:
+        audit_log.log_event(
+            audit_log.SCOPE_DENIED,
+            tenant_id=claims.get("tenant"),
+            agent_id=claims.get("agent_id"),
+            service=claims.get("service"),
+            request_id=claims.get("request_id"),
+            detail=f"action '{action}' blocked — not in scope {scope}",
+        )
+        print(
+            f"[agent-api] SCOPE_DENIED: action={action!r} scope={scope} "
+            f"agent={claims.get('agent_id')!r}",
+            flush=True,
+        )
+        return jsonify({
+            "allowed": False,
+            "action": action,
+            "scope": scope,
+            "error": f"action '{action}' is not permitted by the granted scope",
+        }), 403
 
 
 # ---------------------------------------------------------------------------
